@@ -1,0 +1,7 @@
+haystack-ai
+ollama-haystack
+fastapi
+uvicorn[standard]
+sentence-transformers
+pypdf
+python-multipart
