@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Legal RAG</title>
+  <style>
+    body { max-width: 700px; margin: 40px auto; padding: 0 16px; font: 16px Arial; }
+    form { display: flex; gap: 8px; }
+    input { flex: 1; padding: 10px; }
+    button { padding: 10px 16px; }
+    #answer { white-space: pre-wrap; margin: 30px 0; }
+    details { border-top: 1px solid #ccc; padding: 12px 0; }
+    summary { cursor: pointer; font-weight: bold; }
+    details p { line-height: 1.5; }
+    details.unused { color: #777; background: #f3f3f3; padding: 12px; }
+    mark { background: #fff19c; padding: 2px 0; }
+    .citation { font-size: 0.75em; vertical-align: super; line-height: 0; }
+    .citation a { text-decoration: none; }
+    .citation a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Legal RAG</h1>
+  <form id="chat">
+    <input id="question" placeholder="Ask about the U.S. Constitution" required>
+    <button>Ask</button>
+  </form>
+  <div id="answer"></div>
+  <div id="sources"></div>
+
+  <script>
+    const form = document.querySelector("#chat");
+    const question = document.querySelector("#question");
+    const answer = document.querySelector("#answer");
+    const sources = document.querySelector("#sources");
+
+    function renderAnswer(answerText) {
+      answer.replaceChildren();
+      const citationPattern = /\[(\d+)\]/g;
+      let previousEnd = 0;
+
+      for (const match of answerText.matchAll(citationPattern)) {
+        answer.append(document.createTextNode(answerText.slice(previousEnd, match.index)));
+
+        const citation = document.createElement("sup");
+        const link = document.createElement("a");
+        const chunkNumber = match[1];
+        citation.className = "citation";
+        link.href = `#source-${chunkNumber}`;
+        link.textContent = `[${chunkNumber}]`;
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          const source = document.querySelector(`#source-${chunkNumber}`);
+          if (source) {
+            source.open = true;
+            source.scrollIntoView({behavior: "smooth", block: "start"});
+          }
+        });
+        citation.append(link);
+        answer.append(citation);
+        previousEnd = match.index + match[0].length;
+      }
+
+      answer.append(document.createTextNode(answerText.slice(previousEnd)));
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      let dotCount = 1;
+      answer.textContent = ".";
+      const thinkingAnimation = setInterval(() => {
+        dotCount = dotCount === 3 ? 1 : dotCount + 1;
+        answer.textContent = ".".repeat(dotCount);
+      }, 500);
+      sources.replaceChildren();
+
+      try {
+        const response = await fetch("/ask", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({question: question.value})
+        });
+        if (!response.ok) throw new Error("Request failed");
+
+        const data = await response.json();
+        renderAnswer(data.answer);
+        for (const source of data.sources) {
+          const details = document.createElement("details");
+          const summary = document.createElement("summary");
+          const text = document.createElement("p");
+          details.id = `source-${source.number}`;
+          details.className = source.used ? "used" : "unused";
+          summary.textContent =
+            `${source.used ? "Used" : "Unused"}: Chunk ${source.number} | ${source.document}`;
+          for (const sentence of source.sentences) {
+            const sentenceElement = sentence.highlighted
+              ? document.createElement("mark")
+              : document.createTextNode(sentence.text);
+            if (sentence.highlighted) {
+              sentenceElement.textContent = sentence.text;
+            }
+            text.append(sentenceElement, " ");
+          }
+          details.append(summary, text);
+          sources.append(details);
+        }
+      } catch {
+        answer.textContent = "The request failed. Check that Ollama is running.";
+      } finally {
+        clearInterval(thinkingAnimation);
+      }
+    });
+  </script>
+</body>
+</html>

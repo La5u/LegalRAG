@@ -1,46 +1,83 @@
+import re
 from pathlib import Path
 
 from haystack import Document
 
 
 def load_text(path: Path) -> str:
-    """Load a UTF-8 text document and normalize whitespace."""
-    text = path.read_text(encoding="utf-8")
-    return " ".join(text.split())
+    return path.read_text(encoding="utf-8").strip()
+
+
+def split_sentences(text: str) -> list[str]:
+    return re.split(r"(?<=[.!?])\s+", text)
+
+
+def split_long_block(block: str, max_words: int) -> list[str]:
+    parts = []
+    current_words = []
+
+    for sentence in split_sentences(block):
+        sentence_words = sentence.split()
+        if len(current_words) + len(sentence_words) > max_words and current_words:
+            parts.append(" ".join(current_words))
+            current_words = []
+
+        while len(sentence_words) > max_words:
+            parts.append(" ".join(sentence_words[:max_words]))
+            sentence_words = sentence_words[max_words:]
+
+        current_words.extend(sentence_words)
+
+    if current_words:
+        parts.append(" ".join(current_words))
+
+    return parts
 
 
 def chunk_text(
     text: str,
-    chunk_size: int = 100,
-    overlap: int = 20,
+    max_words: int = 150,
+    document_name: str = "Unknown document",
 ) -> list[Document]:
-    """Split text into overlapping word-based Haystack documents."""
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than zero")
-    if overlap < 0 or overlap >= chunk_size:
-        raise ValueError("overlap must be between zero and chunk_size - 1")
-
-    words = text.split()
-    step = chunk_size - overlap
+    blocks = [
+        " ".join(block.split())
+        for block in re.split(r"(?:\n\s*\n+|[ \t]{4,})", text)
+        if block.strip()
+    ]
     chunks = []
+    block_index = 0
 
-    for chunk_number, start in enumerate(range(0, len(words), step), start=1):
-        chunk_words = words[start : start + chunk_size]
-        if not chunk_words:
-            break
-
+    def add_chunk(content: str, group_id: int, part: int) -> None:
         chunks.append(
             Document(
-                content=" ".join(chunk_words),
+                content=content,
                 meta={
-                    "chunk_number": chunk_number,
-                    "start_word": start,
-                    "end_word": start + len(chunk_words),
+                    "chunk_number": len(chunks) + 1,
+                    "document_name": document_name,
+                    "group_id": group_id,
+                    "part": part,
                 },
             )
         )
 
-        if start + chunk_size >= len(words):
-            break
+    while block_index < len(blocks):
+        block = blocks[block_index]
+        block_words = block.split()
+
+        if len(block_words) > max_words:
+            parts = split_long_block(block, max_words)
+            for part, content in enumerate(parts):
+                add_chunk(content, block_index, part)
+            block_index += 1
+            continue
+
+        if len(block_words) <= 20 and block_index + 1 < len(blocks):
+            next_block = blocks[block_index + 1]
+            if len(block_words) + len(next_block.split()) <= max_words:
+                block = f"{block}\n\n{next_block}"
+                block_index += 1
+
+        add_chunk(block, block_index, 0)
+        block_index += 1
 
     return chunks

@@ -1,6 +1,6 @@
 # LegalRAG
 
-A terminal-based RAG prototype for asking questions about local legal text
+A browser-based RAG prototype for asking questions about local legal text
 documents.
 
 > This is a technical prototype, not legal advice. Answers must be verified
@@ -21,8 +21,9 @@ Document Store
 ```
 
 At query time, the question is embedded and compared with the stored vectors
-using cosine similarity. The three closest chunks are passed to Gemma through
-Ollama.
+using cosine similarity. The three closest chunks are selected. If a selected
+chunk is one part of a long block, all parts of that block are reconstructed
+before the complete block is passed to Gemma through Ollama.
 
 ## Setup
 
@@ -54,7 +55,7 @@ HF_HOME=.cache/huggingface python -c \
 Download the Gemma model:
 
 ```bash
-ollama pull gemma4:12b-it-q4_K_M
+ollama pull gemma4:e4b-it-qat
 ```
 
 The model downloads are only required once.
@@ -71,17 +72,19 @@ In another terminal:
 
 ```bash
 source .venv/bin/activate
-python -m backend.main
+HF_HOME=.cache/huggingface uvicorn backend.web:app
 ```
 
-The prototype loads `documents/us_constitution.txt`, creates 100-word chunks
-with a 20-word overlap, embeds them, and accepts questions through `input()`.
+Open `http://127.0.0.1:8000` in a browser. The app loads
+`documents/us_constitution.txt` and splits it at blank lines or runs of four
+spaces. A block of 20 words or fewer is combined with the next block when the
+result stays at 150 words or fewer. Longer blocks are split at sentence
+boundaries into parts of about 150 words and reconstructed after retrieval.
 The Constitution and amendments corpus was prepared from the official
 [U.S. National Archives transcripts](https://www.archives.gov/founding-docs).
 
-The original 500-word/100-word-overlap plan was reduced because
-`all-MiniLM-L6-v2` truncates long inputs. With 500-word chunks, later text was
-not represented in the vector and relevant passages were missed.
+The 150-word limit is conservative for the 256-token input limit of
+`all-MiniLM-L6-v2`.
 
 ## TODO
 
@@ -90,10 +93,9 @@ not represented in the vector and relevant passages were missed.
 - Show the retrieved source text with every answer
 - Add clearer citations containing chunk, section, article, and amendment
   information
-- Preserve document headings and other metadata during chunking
 - Allow users to upload and index their own TXT documents
 - Handle Ollama connection errors, loading delays, and timeouts clearly
-- Improve Gemma 4 12B performance without replacing the model:
+- Improve Gemma 4 E4B QAT performance:
   - Preload Gemma before the first question and keep it resident in memory
   - Reduce prompt size by sending only the most useful retrieved text
   - Tune Ollama context length, batch size, thread count, and memory settings
@@ -119,7 +121,7 @@ not represented in the vector and relevant passages were missed.
 - deepset Haystack
 - FastAPI
 - Ollama
-- Gemma 4 12B (`gemma4:12b-it-q4_K_M`)
+- Gemma 4 E4B QAT (`gemma4:e4b-it-qat`)
 - `all-MiniLM-L6-v2` embeddings
 - Haystack `InMemoryDocumentStore`
 
