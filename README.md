@@ -9,9 +9,9 @@ documents.
 ## Pipeline
 
 ```text
-TXT
+TXT or text-based PDF
  ↓
-Text Cleaning
+Text Extraction and Cleaning
  ↓
 Chunking
  ↓
@@ -22,8 +22,11 @@ Document Store
 
 At query time, the question is embedded and compared with the stored vectors
 using cosine similarity. The three closest chunks are selected. If a selected
-chunk is one part of a long block, all parts of that block are reconstructed
-before the complete block is passed to Gemma through Ollama.
+chunk is one part of a long block, its immediately previous and next chunks are
+also included when they belong to that same block. A first or last chunk has
+only one neighbor. Each included chunk remains separate and receives a
+temporary citation number based on its order in the context.
+PDF sources also show the page number containing the chunk.
 
 ## Setup
 
@@ -32,24 +35,42 @@ Requirements:
 - Python 3.11 or newer
 - [Ollama](https://ollama.com/)
 
-Create and activate a virtual environment:
+Create and activate a virtual environment.
+
+Linux or macOS:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
+Windows PowerShell:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
 Install the Python dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Download the embedding model into the project cache:
+Download the embedding model into the project cache.
+
+Linux or macOS:
 
 ```bash
 HF_HOME=.cache/huggingface python -c \
   "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:HF_HOME = ".cache/huggingface"
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 ```
 
 Download the Gemma model:
@@ -60,6 +81,10 @@ ollama pull gemma4:e4b-it-qat
 
 The model downloads are only required once.
 
+Normal runtime is local: the browser connects to FastAPI on `127.0.0.1:8000`,
+and FastAPI connects to Ollama on `127.0.0.1:11434`. Haystack telemetry is
+disabled, and Hugging Face and Transformers run in offline mode.
+
 ## Run
 
 Start Ollama:
@@ -68,50 +93,71 @@ Start Ollama:
 ollama serve
 ```
 
-In another terminal:
+In another terminal, activate the environment and start FastAPI.
+
+Linux or macOS:
 
 ```bash
 source .venv/bin/activate
-HF_HOME=.cache/huggingface uvicorn backend.web:app
+python -m uvicorn backend.web:app
 ```
 
-Open `http://127.0.0.1:8000` in a browser. The app loads
-`documents/us_constitution.txt` and splits it at blank lines or runs of four
-spaces. A block of 20 words or fewer is combined with the next block when the
-result stays at 150 words or fewer. Longer blocks are split at sentence
-boundaries into parts of about 150 words and reconstructed after retrieval.
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn backend.web:app
+```
+
+Open `http://127.0.0.1:8000` in a browser. The app loads every `.txt` and `.pdf`
+file in `documents/`. TXT files are read directly. `pdfplumber` extracts text
+and word positions from each PDF page. A larger-than-normal vertical gap
+between lines becomes a paragraph break. Standalone numeric page lines are
+removed. Extraction happens during startup or upload, so the PDF is not parsed
+again for each question.
+The original PDF remains in `documents/` instead of being converted into a
+second TXT file. This preserves the authoritative source and makes future page
+citations or improved parsing possible.
+
+Extracted text is split at blank lines or runs of four spaces. A block of 50
+words or fewer is combined with the next block when the result stays at 150
+words or fewer. Longer blocks are split at sentence boundaries into parts of
+about 150 words. After retrieval, the app adds at most one preceding and one
+following part from the same original block.
 The Constitution and amendments corpus was prepared from the official
 [U.S. National Archives transcripts](https://www.archives.gov/founding-docs).
 
 The 150-word limit is conservative for the 256-token input limit of
 `all-MiniLM-L6-v2`.
 
-## TODO
+The app saves the Haystack in-memory document store, including embeddings, in
+`.cache/document_store.json`. On startup, the cache is reused when it is newer
+than every source document. Otherwise, all documents are indexed again and the
+cache is replaced. Changing the embedding model or chunking code requires
+manually deleting the cache. Successful uploads also refresh it.
 
-- Add a FastAPI backend so the RAG system can receive questions over HTTP
-- Build an HTML, CSS, and JavaScript frontend for asking questions
-- Show the retrieved source text with every answer
-- Add clearer citations containing chunk, section, article, and amendment
-  information
-- Allow users to upload and index their own TXT documents
-- Handle Ollama connection errors, loading delays, and timeouts clearly
-- Improve Gemma 4 E4B QAT performance:
-  - Preload Gemma before the first question and keep it resident in memory
-  - Reduce prompt size by sending only the most useful retrieved text
-  - Tune Ollama context length, batch size, thread count, and memory settings
-  - Reduce competing RAM usage and avoid swapping while Gemma is running
-  - Evaluate supported GPU acceleration or hardware with more memory
-  - Measure model loading, prompt processing, and answer-generation times
-- Save embeddings so documents do not need to be indexed after every restart
-- Add automated tests for chunking, retrieval, and answer generation
-- Evaluate retrieval quality using a set of Constitution questions
-- Compare different chunk sizes, overlap sizes, and embedding models
-- Add hybrid semantic and keyword search for exact legal terms
-- Support PDF parsing and OCR after the TXT workflow is stable
-- Replace the in-memory document store with Qdrant or OpenSearch for
-  production use
-- Add authentication, document permissions, audit logs, monitoring, and
-  backups for business use
+Use the `+` button beside the question field to upload another UTF-8 `.txt` or
+text-based `.pdf` file. The app saves it in `documents/`, immediately chunks
+and embeds it, and makes it searchable without a restart. Existing filenames
+cannot be overwritten through the upload interface. Select `Files` to see
+every indexed filename and its chunk count.
+
+Image-only scanned PDFs have no text layer, so they require OCR. OCR means
+software that recognizes text inside images and remains a future upgrade.
+
+## Retrieval Limitation
+
+The local neighbor window reduces the amount of text sent to Gemma, but it can
+miss relevant context elsewhere in a long paragraph. This is especially
+possible when a definition, condition, or exception appears several chunks
+away from the retrieved match.
+
+A production system should evaluate broader context strategies. Alternatives
+include also providing the first and last chunks of the paragraph, dynamically
+expanding the window until a section boundary, reranking all paragraph chunks,
+or generating and retrieving a separate summary of each paragraph. These
+approaches use more context or processing, so their retrieval quality and
+latency should be measured on representative legal questions.
 
 ## Tech Stack
 
@@ -124,6 +170,7 @@ The 150-word limit is conservative for the 256-token input limit of
 - Gemma 4 E4B QAT (`gemma4:e4b-it-qat`)
 - `all-MiniLM-L6-v2` embeddings
 - Haystack `InMemoryDocumentStore`
+- `pdfplumber` for local PDF text extraction
 
 ### Frontend
 
