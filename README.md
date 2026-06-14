@@ -1,5 +1,7 @@
 # LegalRAG
 
+![LegalRAG application screenshot](image.png)
+
 A browser-based RAG prototype for asking questions about local legal text
 documents.
 
