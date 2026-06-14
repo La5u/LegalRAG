@@ -47,7 +47,7 @@ source .venv/bin/activate
 Windows PowerShell:
 
 ```powershell
-py -3.11 -m venv .venv
+py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -59,9 +59,13 @@ python -m pip install -r requirements.txt
 
 Download the embedding model into the project cache.
 
+If the download is slow or rate-limited, set a Hugging Face access token before
+running the download command:
+
 Linux or macOS:
 
 ```bash
+export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxxxxx"
 HF_HOME=.cache/huggingface python -c \
   "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 ```
@@ -69,6 +73,7 @@ HF_HOME=.cache/huggingface python -c \
 Windows PowerShell:
 
 ```powershell
+$env:HF_TOKEN = "hf_xxxxxxxxxxxxxxxxxxxxxxxxx"
 $env:HF_HOME = ".cache/huggingface"
 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 ```
@@ -147,17 +152,8 @@ software that recognizes text inside images and remains a future upgrade.
 
 ## Retrieval Limitation
 
-The local neighbor window reduces the amount of text sent to Gemma, but it can
-miss relevant context elsewhere in a long paragraph. This is especially
-possible when a definition, condition, or exception appears several chunks
-away from the retrieved match.
-
-A production system should evaluate broader context strategies. Alternatives
-include also providing the first and last chunks of the paragraph, dynamically
-expanding the window until a section boundary, reranking all paragraph chunks,
-or generating and retrieving a separate summary of each paragraph. These
-approaches use more context or processing, so their retrieval quality and
-latency should be measured on representative legal questions.
+The local neighbor window keeps prompts smaller, but it may miss relevant text
+that is several chunks away from the retrieved match.
 
 ## Tech Stack
 
