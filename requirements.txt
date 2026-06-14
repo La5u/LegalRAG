@@ -3,5 +3,5 @@ ollama-haystack
 fastapi
 uvicorn[standard]
 sentence-transformers
-pypdf
+pdfplumber
 python-multipart
