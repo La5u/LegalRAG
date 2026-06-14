@@ -9,12 +9,17 @@
     form { display: flex; gap: 8px; }
     input { flex: 1; padding: 10px; }
     button { padding: 10px 16px; }
+    #upload-button { font-size: 1.4em; line-height: 1; }
+    #upload-status { min-height: 1.5em; color: #555; }
+    #files-button { margin-top: 12px; padding: 6px 10px; }
+    #files-panel { margin-top: 4px; }
+    #file-list { margin: 8px 0 0; padding: 0; list-style: none; color: #555; }
+    #file-list li { padding: 3px 0; }
+    .error { color: #a00 !important; }
     #answer { white-space: pre-wrap; margin: 30px 0; }
     details { border-top: 1px solid #ccc; padding: 12px 0; }
-    summary { cursor: pointer; font-weight: bold; }
+    summary { cursor: pointer; }
     details p { line-height: 1.5; }
-    details.unused { color: #777; background: #f3f3f3; padding: 12px; }
-    mark { background: #fff19c; padding: 2px 0; }
     .citation { font-size: 0.75em; vertical-align: super; line-height: 0; }
     .citation a { text-decoration: none; }
     .citation a:hover { text-decoration: underline; }
@@ -23,14 +28,37 @@
 <body>
   <h1>Legal RAG</h1>
   <form id="chat">
-    <input id="question" placeholder="Ask about the U.S. Constitution" required>
+    <button
+      id="upload-button"
+      type="button"
+      title="Upload a TXT or PDF document"
+      aria-label="Upload a TXT or PDF document"
+    >+</button>
+    <input
+      id="document-file"
+      type="file"
+      accept=".txt,.pdf,text/plain,application/pdf"
+      hidden
+    >
+    <input id="question" placeholder="Ask about your documents" required>
     <button>Ask</button>
   </form>
+  <div id="upload-status" role="status"></div>
+  <button id="files-button" type="button" aria-expanded="false">Files</button>
+  <div id="files-panel" hidden>
+    <ul id="file-list"></ul>
+  </div>
   <div id="answer"></div>
   <div id="sources"></div>
 
   <script>
     const form = document.querySelector("#chat");
+    const uploadButton = document.querySelector("#upload-button");
+    const documentFile = document.querySelector("#document-file");
+    const uploadStatus = document.querySelector("#upload-status");
+    const filesButton = document.querySelector("#files-button");
+    const filesPanel = document.querySelector("#files-panel");
+    const fileList = document.querySelector("#file-list");
     const question = document.querySelector("#question");
     const answer = document.querySelector("#answer");
     const sources = document.querySelector("#sources");
@@ -51,11 +79,7 @@
         link.textContent = `[${chunkNumber}]`;
         link.addEventListener("click", (event) => {
           event.preventDefault();
-          const source = document.querySelector(`#source-${chunkNumber}`);
-          if (source) {
-            source.open = true;
-            source.scrollIntoView({behavior: "smooth", block: "start"});
-          }
+          document.querySelector(link.hash)?.toggleAttribute("open");
         });
         citation.append(link);
         answer.append(citation);
@@ -65,13 +89,93 @@
       answer.append(document.createTextNode(answerText.slice(previousEnd)));
     }
 
+    function renderSources(sourceList) {
+      for (const source of sourceList) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        const text = document.createElement("p");
+        details.id = `source-${source.citation}`;
+        const score = source.score === null
+          ? "context"
+          : source.score.toFixed(3);
+        const filename = document.createElement("strong");
+        filename.textContent = source.document;
+        summary.append(
+          `${source.citation}. `,
+          filename,
+          `${source.page === null ? "" : ` | Page ${source.page}`}` +
+          ` | Chunk ${source.chunk} | Score: ${score}`
+        );
+        text.textContent = source.text;
+        details.append(summary, text);
+        sources.append(details);
+      }
+    }
+
+    async function refreshFiles() {
+      const response = await fetch("/documents");
+      if (!response.ok) return;
+
+      const data = await response.json();
+      fileList.replaceChildren();
+      for (const fileInfo of data.documents) {
+        const item = document.createElement("li");
+        item.textContent = `${fileInfo.name} - ${fileInfo.chunks} chunks`;
+        fileList.append(item);
+      }
+    }
+
+    uploadButton.addEventListener("click", () => {
+      documentFile.click();
+    });
+
+    filesButton.addEventListener("click", () => {
+      const opening = filesPanel.hidden;
+      filesPanel.hidden = !opening;
+      filesButton.setAttribute("aria-expanded", String(opening));
+    });
+
+    documentFile.addEventListener("change", async () => {
+      const file = documentFile.files[0];
+      if (!file) return;
+
+      uploadButton.disabled = true;
+      uploadStatus.className = "";
+      uploadStatus.textContent = `Uploading and indexing ${file.name}...`;
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const response = await fetch("/documents", {
+          method: "POST",
+          body: formData
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Upload failed");
+        }
+
+        uploadStatus.textContent =
+          `${data.document} is ready for questions (${data.chunks} chunks).`;
+        await refreshFiles();
+      } catch (error) {
+        uploadStatus.className = "error";
+        uploadStatus.textContent = error.message;
+      } finally {
+        uploadButton.disabled = false;
+        documentFile.value = "";
+      }
+    });
+
+    refreshFiles();
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       let dotCount = 1;
-      answer.textContent = ".";
-      const thinkingAnimation = setInterval(() => {
+      answer.textContent = "Thinking.";
+      const dotAnimation = setInterval(() => {
         dotCount = dotCount === 3 ? 1 : dotCount + 1;
-        answer.textContent = ".".repeat(dotCount);
+        answer.textContent = `Thinking${".".repeat(dotCount)}`;
       }, 500);
       sources.replaceChildren();
 
@@ -83,32 +187,39 @@
         });
         if (!response.ok) throw new Error("Request failed");
 
-        const data = await response.json();
-        renderAnswer(data.answer);
-        for (const source of data.sources) {
-          const details = document.createElement("details");
-          const summary = document.createElement("summary");
-          const text = document.createElement("p");
-          details.id = `source-${source.number}`;
-          details.className = source.used ? "used" : "unused";
-          summary.textContent =
-            `${source.used ? "Used" : "Unused"}: Chunk ${source.number} | ${source.document}`;
-          for (const sentence of source.sentences) {
-            const sentenceElement = sentence.highlighted
-              ? document.createElement("mark")
-              : document.createTextNode(sentence.text);
-            if (sentence.highlighted) {
-              sentenceElement.textContent = sentence.text;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let answerText = "";
+
+        while (true) {
+          const {value, done} = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line) continue;
+            const message = JSON.parse(line);
+            if (message.type === "sources") {
+              renderSources(message.sources);
+            } else if (message.type === "token") {
+              clearInterval(dotAnimation);
+              answerText += message.text;
+              answer.textContent = answerText;
+            } else if (message.type === "error") {
+              throw new Error("Generation failed");
             }
-            text.append(sentenceElement, " ");
           }
-          details.append(summary, text);
-          sources.append(details);
+
+          if (done) break;
         }
+
+        renderAnswer(answerText);
       } catch {
         answer.textContent = "The request failed. Check that Ollama is running.";
       } finally {
-        clearInterval(thinkingAnimation);
+        clearInterval(dotAnimation);
       }
     });
   </script>
