@@ -10,11 +10,6 @@
     input { flex: 1; padding: 10px; }
     select { padding: 10px; }
     button { padding: 10px 16px; }
-    #files-button { margin-top: 12px; padding: 6px 10px; }
-    #files-panel { margin-top: 4px; }
-    #file-list { margin: 8px 0 0; padding: 0; list-style: none; color: #555; }
-    #file-list li { padding: 3px 0; }
-    .error { color: #a00 !important; }
     #answer { white-space: pre-wrap; margin: 30px 0; }
     details { border-top: 1px solid #ccc; padding: 12px 0; }
     summary { cursor: pointer; }
@@ -34,18 +29,11 @@
     </select>
     <button>Ask</button>
   </form>
-  <button id="files-button" type="button" aria-expanded="false">Files</button>
-  <div id="files-panel" hidden>
-    <ul id="file-list"></ul>
-  </div>
   <div id="answer"></div>
   <div id="sources"></div>
 
   <script>
     const form = document.querySelector("#chat");
-    const filesButton = document.querySelector("#files-button");
-    const filesPanel = document.querySelector("#files-panel");
-    const fileList = document.querySelector("#file-list");
     const question = document.querySelector("#question");
     const strategy = document.querySelector("#strategy");
     const answer = document.querySelector("#answer");
@@ -98,37 +86,6 @@
         sources.append(details);
       }
     }
-
-    async function refreshFiles() {
-      fileList.replaceChildren();
-      const loadingItem = document.createElement("li");
-      loadingItem.textContent = "Loading files...";
-      fileList.append(loadingItem);
-
-      try {
-        const response = await fetch("/documents");
-        if (!response.ok) throw new Error("Request failed");
-
-        const data = await response.json();
-        fileList.replaceChildren();
-        for (const fileInfo of data.documents) {
-          const item = document.createElement("li");
-          item.textContent = `${fileInfo.name} - ${fileInfo.chunks} chunks`;
-          fileList.append(item);
-        }
-      } catch {
-        loadingItem.textContent = "Could not load files.";
-        loadingItem.className = "error";
-      }
-    }
-
-    filesButton.addEventListener("click", () => {
-      const opening = filesPanel.hidden;
-      filesPanel.hidden = !opening;
-      filesButton.setAttribute("aria-expanded", String(opening));
-    });
-
-    refreshFiles();
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
