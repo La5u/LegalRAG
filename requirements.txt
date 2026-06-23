@@ -1,7 +1,6 @@
-haystack-ai
-ollama-haystack
 fastapi
 uvicorn[standard]
 sentence-transformers
-pdfplumber
-python-multipart
+neo4j
+httpx
+kiwipiepy

@@ -8,9 +8,8 @@
     body { max-width: 700px; margin: 40px auto; padding: 0 16px; font: 16px Arial; }
     form { display: flex; gap: 8px; }
     input { flex: 1; padding: 10px; }
+    select { padding: 10px; }
     button { padding: 10px 16px; }
-    #upload-button { font-size: 1.4em; line-height: 1; }
-    #upload-status { min-height: 1.5em; color: #555; }
     #files-button { margin-top: 12px; padding: 6px 10px; }
     #files-panel { margin-top: 4px; }
     #file-list { margin: 8px 0 0; padding: 0; list-style: none; color: #555; }
@@ -28,22 +27,13 @@
 <body>
   <h1>Legal RAG</h1>
   <form id="chat">
-    <button
-      id="upload-button"
-      type="button"
-      title="Upload a TXT or PDF document"
-      aria-label="Upload a TXT or PDF document"
-    >+</button>
-    <input
-      id="document-file"
-      type="file"
-      accept=".txt,.pdf,text/plain,application/pdf"
-      hidden
-    >
     <input id="question" placeholder="Ask about your documents" required>
+    <select id="strategy" aria-label="Retrieval strategy">
+      <option value="hybrid">GraphRAG</option>
+      <option value="vector">Vector</option>
+    </select>
     <button>Ask</button>
   </form>
-  <div id="upload-status" role="status"></div>
   <button id="files-button" type="button" aria-expanded="false">Files</button>
   <div id="files-panel" hidden>
     <ul id="file-list"></ul>
@@ -53,13 +43,11 @@
 
   <script>
     const form = document.querySelector("#chat");
-    const uploadButton = document.querySelector("#upload-button");
-    const documentFile = document.querySelector("#document-file");
-    const uploadStatus = document.querySelector("#upload-status");
     const filesButton = document.querySelector("#files-button");
     const filesPanel = document.querySelector("#files-panel");
     const fileList = document.querySelector("#file-list");
     const question = document.querySelector("#question");
+    const strategy = document.querySelector("#strategy");
     const answer = document.querySelector("#answer");
     const sources = document.querySelector("#sources");
 
@@ -103,7 +91,6 @@
         summary.append(
           `${source.citation}. `,
           filename,
-          `${source.page === null ? "" : ` | Page ${source.page}`}` +
           ` | Chunk ${source.chunk} | Score: ${score}`
         );
         text.textContent = source.text;
@@ -113,58 +100,32 @@
     }
 
     async function refreshFiles() {
-      const response = await fetch("/documents");
-      if (!response.ok) return;
-
-      const data = await response.json();
       fileList.replaceChildren();
-      for (const fileInfo of data.documents) {
-        const item = document.createElement("li");
-        item.textContent = `${fileInfo.name} - ${fileInfo.chunks} chunks`;
-        fileList.append(item);
+      const loadingItem = document.createElement("li");
+      loadingItem.textContent = "Loading files...";
+      fileList.append(loadingItem);
+
+      try {
+        const response = await fetch("/documents");
+        if (!response.ok) throw new Error("Request failed");
+
+        const data = await response.json();
+        fileList.replaceChildren();
+        for (const fileInfo of data.documents) {
+          const item = document.createElement("li");
+          item.textContent = `${fileInfo.name} - ${fileInfo.chunks} chunks`;
+          fileList.append(item);
+        }
+      } catch {
+        loadingItem.textContent = "Could not load files.";
+        loadingItem.className = "error";
       }
     }
-
-    uploadButton.addEventListener("click", () => {
-      documentFile.click();
-    });
 
     filesButton.addEventListener("click", () => {
       const opening = filesPanel.hidden;
       filesPanel.hidden = !opening;
       filesButton.setAttribute("aria-expanded", String(opening));
-    });
-
-    documentFile.addEventListener("change", async () => {
-      const file = documentFile.files[0];
-      if (!file) return;
-
-      uploadButton.disabled = true;
-      uploadStatus.className = "";
-      uploadStatus.textContent = `Uploading and indexing ${file.name}...`;
-      const formData = new FormData();
-      formData.append("file", file);
-
-      try {
-        const response = await fetch("/documents", {
-          method: "POST",
-          body: formData
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.detail || "Upload failed");
-        }
-
-        uploadStatus.textContent =
-          `${data.document} is ready for questions (${data.chunks} chunks).`;
-        await refreshFiles();
-      } catch (error) {
-        uploadStatus.className = "error";
-        uploadStatus.textContent = error.message;
-      } finally {
-        uploadButton.disabled = false;
-        documentFile.value = "";
-      }
     });
 
     refreshFiles();
@@ -183,7 +144,7 @@
         const response = await fetch("/ask", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({question: question.value})
+          body: JSON.stringify({question: question.value, strategy: strategy.value})
         });
         if (!response.ok) throw new Error("Request failed");
 
@@ -200,7 +161,12 @@
 
           for (const line of lines) {
             if (!line) continue;
-            const message = JSON.parse(line);
+            let message;
+            try {
+              message = JSON.parse(line);
+            } catch {
+              throw new Error("Received malformed response from server");
+            }
             if (message.type === "sources") {
               renderSources(message.sources);
             } else if (message.type === "token") {
@@ -215,9 +181,12 @@
           if (done) break;
         }
 
+        if (!answerText.trim()) {
+          throw new Error("Generation returned no visible answer");
+        }
         renderAnswer(answerText);
       } catch {
-        answer.textContent = "The request failed. Check that Ollama is running.";
+        answer.textContent = "The request failed. Check Neo4j, Ollama, and the server logs.";
       } finally {
         clearInterval(dotAnimation);
       }
