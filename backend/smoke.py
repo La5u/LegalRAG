@@ -239,11 +239,16 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
     )
 
 
-def assert_exact_article_lookup(rag: LegalRAG, doc_keyword: str, article_number: str) -> None:
+def assert_exact_article_lookup(
+    rag: LegalRAG,
+    doc_keyword: str,
+    article_number: str,
+) -> None:
     """Check questions like: what is in Article X?"""
     records = rag._run_read(
         """
-        MATCH (document:Document)-[:CONTAINS*1..3]->(article:LegalUnit {kind: "article"})-[:HAS_CHUNK]->(:Chunk)
+        MATCH (document:Document)-[:CONTAINS*1..3]->(article:LegalUnit {kind: "article"})
+            -[:HAS_CHUNK]->(:Chunk)
         WHERE document.name CONTAINS $doc_keyword
             AND article.number = $article_number
         RETURN count(article) AS count
@@ -279,7 +284,10 @@ def assert_phrase_article_lookup(
     )
     found = [record["article_number"] for record in records]
     if expected_article not in found:
-        fail(f"missing phrase lookup: {phrase} expected {expected_article}, found {found}")
+        fail(
+            f"missing phrase lookup: {phrase} "
+            f"expected {expected_article}, found {found}"
+        )
 
 
 def assert_article_questions(rag: LegalRAG) -> None:

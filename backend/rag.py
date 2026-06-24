@@ -74,7 +74,9 @@ class LegalRAG:
     def embedding_dimensions(self) -> int:
         if self._embedding_dimensions is None:
             if hasattr(self.embedding_model, "get_embedding_dimension"):
-                self._embedding_dimensions = self.embedding_model.get_embedding_dimension()
+                self._embedding_dimensions = (
+                    self.embedding_model.get_embedding_dimension()
+                )
             else:
                 self._embedding_dimensions = (
                     self.embedding_model.get_sentence_embedding_dimension()
@@ -179,12 +181,15 @@ class LegalRAG:
         )
 
         chunk_texts = [chunk.content for chunk in chunks]
-        chunk_embeddings = self.embedding_model.encode(
-            chunk_texts,
-            batch_size=EMBEDDING_BATCH_SIZE,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ) if chunk_texts else []
+        if chunk_texts:
+            chunk_embeddings = self.embedding_model.encode(
+                chunk_texts,
+                batch_size=EMBEDDING_BATCH_SIZE,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+        else:
+            chunk_embeddings = []
 
         self._run_write(
             """

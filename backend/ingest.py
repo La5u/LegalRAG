@@ -14,11 +14,23 @@ SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？다요죠])\s+")
 # Example: "제1조(목적)" means "Article 1 (Purpose)".
 STRUCTURE_PATTERNS = [
     ("chapter", re.compile(r"^(?P<number>제\d+장)\s*(?P<title>.*)")),
-    ("chapter", re.compile(r"^(?P<number>Article\s+[IVXLCDM\d]+)\.?\s*(?P<title>.*)", re.IGNORECASE)),
+    (
+        "chapter",
+        re.compile(
+            r"^(?P<number>Article\s+[IVXLCDM\d]+)\.?\s*(?P<title>.*)",
+            re.IGNORECASE,
+        ),
+    ),
     ("chapter", re.compile(r"^(?P<number>ARTICLE\s+[A-Z]+)\.?\s*(?P<title>.*)")),
     ("section", re.compile(r"^(?P<number>제\d+절)\s*(?P<title>.*)")),
     ("article", re.compile(r"^(?P<number>제\d+조(?:의\d+)?)(?:\((?P<title>[^)]*)\))?")),
-    ("article", re.compile(r"^(?P<number>Section\s+\d+)\.?\s*(?P<title>.*)", re.IGNORECASE)),
+    (
+        "article",
+        re.compile(
+            r"^(?P<number>Section\s+\d+)\.?\s*(?P<title>.*)",
+            re.IGNORECASE,
+        ),
+    ),
     ("clause", re.compile(r"^(?P<number>[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])\s*(?P<title>.*)")),
     ("item", re.compile(r"^(?P<number>\d+\.)\s*(?P<title>.*)")),
     ("subitem", re.compile(r"^(?P<number>[가-하]\.)\s*(?P<title>.*)")),
@@ -171,7 +183,7 @@ def chunk_text(
             "title": title,
             "order": structure_orders[order_key],
         }
-        for child_kind in STRUCTURE_KINDS[kind_index + 1:]:
+        for child_kind in STRUCTURE_KINDS[kind_index + 1 :]:
             current_structures[child_kind] = {
                 "number": None,
                 "title": None,
