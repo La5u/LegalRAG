@@ -20,7 +20,11 @@ rag: LegalRAG | None = None
 async def lifespan(app: FastAPI):
     global rag
     rag = LegalRAG()
-    yield
+    try:
+        yield
+    finally:
+        rag.close()
+        rag = None
 
 
 app = FastAPI(lifespan=lifespan)
