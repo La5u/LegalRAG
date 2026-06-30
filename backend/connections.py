@@ -9,19 +9,12 @@ EXCEPTION_PATTERN = re.compile(r"(다만|예외로 한다|제외한다|그러하
 CONNECTION_RELATIONS = ["CITES", "EXCEPTION_TO"]
 
 
-def article_concept(chunk: Document) -> str | None:
-    article_number = chunk.meta.get("article_number")
-    if not article_number:
-        return None
-    return article_number
-
-
 def extract_connections(chunks: list[Document]) -> list[dict]:
     connections = []
     seen = set()
 
     for chunk in chunks:
-        source = article_concept(chunk)
+        source = chunk.meta.get("article_number")
         if not source:
             continue
 
