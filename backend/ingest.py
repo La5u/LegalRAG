@@ -4,10 +4,26 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+import pdfplumber
+import pypdfium2 as pdfium
+
 from backend.config import DEFAULT_MAX_WORDS
+from backend.text import split_sentences
 
 MAX_SHORT_BLOCK_WORDS = 50
-SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？다요죠])\s+")
+KOREAN_PATTERN = re.compile(r"[가-힣]")
+HANJA_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+LEGAL_ARTICLE_PATTERN = re.compile(r"제\d+조(?:의\d+)?")
+PDF_PARAGRAPH_START_PATTERN = re.compile(
+    r"^(제\d+장|제\d+절|제\d+조(?:의\d+)?|【[^】]+】|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\d+\.|[가-하]\.)"
+)
+PDF_NOISE_LINE_PATTERN = re.compile(
+    r"^(법제처\s*\d*\s*국가법령정보센터|법제처\s*-?\s*/\s*-\s*국가법령정보센터|-?\s*\d+\s*/\s*\d+\s*-?)$"
+)
+SPACED_DIGITS_PATTERN = re.compile(r"(?<!\d)(\d(?:\s+\d)+)(?!\d)")
+REPLACEMENT_CHARACTER = "\ufffd"
+MIN_PDF_TEXT_LENGTH = 200
+MIN_PDF_ARTICLES_FOR_LEGAL_TEXT = 1
 # Korean law structure used here:
 # 법령 = law/document, 장 = chapter, 절 = section, 조문 = article,
 # 항 = clause, 호 = item, 목 = sub-item.
@@ -90,14 +106,161 @@ def load_hwpx(path: Path) -> str:
 
 
 def load_txt(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
-    start_marker = "THE CONSTITUTION OF THE UNITED STATES OF AMERICA"
-    end_marker = "*** END OF THE PROJECT GUTENBERG EBOOK"
-    start = text.find(start_marker)
-    end = text.find(end_marker)
-    if start != -1 and end != -1 and start < end:
-        return text[start:end].strip()
+    return path.read_text(encoding="utf-8")
+
+
+def compact_spaced_digits(text: str) -> str:
+    return SPACED_DIGITS_PATTERN.sub(
+        lambda match: match.group(1).replace(" ", ""),
+        text,
+    )
+
+
+def clean_pdf_line(line: str) -> str:
+    line = " ".join(line.split())
+    line = compact_spaced_digits(line)
+    return line.strip()
+
+
+def is_pdf_noise_line(line: str) -> bool:
+    return bool(PDF_NOISE_LINE_PATTERN.match(line))
+
+
+def pdf_line_starts_paragraph(line: str) -> bool:
+    return bool(PDF_PARAGRAPH_START_PATTERN.match(line))
+
+
+def normalize_pdf_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?<!\n)(?=【[^】]+】)", "\n", text)
+    paragraphs = []
+    current_lines = []
+
+    for raw_line in text.splitlines():
+        line = clean_pdf_line(raw_line)
+        if not line:
+            if current_lines:
+                paragraphs.append(" ".join(current_lines))
+                current_lines = []
+            continue
+        if is_pdf_noise_line(line):
+            continue
+        if pdf_line_starts_paragraph(line) and current_lines:
+            paragraphs.append(" ".join(current_lines))
+            current_lines = []
+        current_lines.append(line)
+
+    if current_lines:
+        paragraphs.append(" ".join(current_lines))
+
+    return "\n\n".join(paragraphs)
+
+
+def pdf_text_quality(text: str) -> dict[str, int]:
+    return {
+        "length": len(text),
+        "korean": len(KOREAN_PATTERN.findall(text)),
+        "hanja": len(HANJA_PATTERN.findall(text)),
+        "articles": len(LEGAL_ARTICLE_PATTERN.findall(text)),
+        "replacement": text.count(REPLACEMENT_CHARACTER),
+    }
+
+
+def pdf_text_score(text: str) -> int:
+    quality = pdf_text_quality(text)
+    return (
+        quality["length"]
+        + quality["korean"] * 2
+        + quality["hanja"] * 2
+        + quality["articles"] * 25
+        - quality["replacement"] * 50
+    )
+
+
+def extract_pdf_with_pdfium(path: Path) -> str:
+    pages = []
+
+    pdf = pdfium.PdfDocument(path)
+    for page in pdf:
+        text_page = page.get_textpage()
+        text = text_page.get_text_range().strip()
+        if text:
+            pages.append(text)
+
+    return normalize_pdf_text("\n\n".join(pages))
+
+
+def extract_pdfplumber_parts(path: Path) -> tuple[str, int]:
+    pages = []
+    table_count = 0
+
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text(layout=True) or page.extract_text() or ""
+            tables = page.extract_tables()
+            table_count += len(tables)
+            table_text = []
+            for table in tables:
+                for row in table:
+                    cells = [cell.strip() for cell in row if cell and cell.strip()]
+                    if cells:
+                        table_text.append(" | ".join(cells))
+            combined = "\n".join(part for part in [text.strip(), "\n".join(table_text)] if part)
+            if combined:
+                pages.append(combined)
+
+    return normalize_pdf_text("\n\n".join(pages)), table_count
+
+
+def pdfplumber_table_count(path: Path) -> int:
+    table_count = 0
+
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            table_count += len(page.find_tables())
+
+    return table_count
+
+
+def extract_pdf_with_pdfplumber(path: Path) -> str:
+    text, _table_count = extract_pdfplumber_parts(path)
     return text
+
+
+def should_use_pdfplumber(
+    pdfium_text: str, pdfplumber_text: str, pdfplumber_table_count: int
+) -> bool:
+    pdfium_quality = pdf_text_quality(pdfium_text)
+    pdfplumber_quality = pdf_text_quality(pdfplumber_text)
+    if pdfium_quality["length"] < MIN_PDF_TEXT_LENGTH:
+        return True
+    if pdfium_quality["replacement"] > 0:
+        return True
+    if pdfplumber_quality["hanja"] > pdfium_quality["hanja"]:
+        return True
+    if pdfplumber_quality["articles"] > pdfium_quality["articles"]:
+        return True
+    if pdfplumber_table_count > 0 and pdf_text_score(pdfplumber_text) > pdf_text_score(pdfium_text) * 1.2:
+        return True
+    return False
+
+
+def load_pdf(path: Path) -> str:
+    pdfium_text = extract_pdf_with_pdfium(path)
+    pdfium_quality = pdf_text_quality(pdfium_text)
+    should_check_pdfplumber = (
+        pdfium_quality["length"] < MIN_PDF_TEXT_LENGTH
+        or pdfium_quality["replacement"] > 0
+        or pdfium_quality["articles"] < MIN_PDF_ARTICLES_FOR_LEGAL_TEXT
+        or pdfplumber_table_count(path) > 0
+    )
+    if not should_check_pdfplumber:
+        return pdfium_text
+
+    pdfplumber_text, pdfplumber_table_count = extract_pdfplumber_parts(path)
+    if should_use_pdfplumber(pdfium_text, pdfplumber_text, pdfplumber_table_count):
+        return pdfplumber_text
+    return pdfium_text
 
 
 def load_document(path: Path) -> str:
@@ -106,14 +269,16 @@ def load_document(path: Path) -> str:
         return load_hwpx(path)
     if suffix == ".txt":
         return load_txt(path)
-    raise ValueError("Only HWPX and TXT documents are supported.")
+    if suffix == ".pdf":
+        return load_pdf(path)
+    raise ValueError("Only HWPX, PDF, and TXT documents are supported.")
 
 
 def split_long_block(block: str, max_words: int) -> list[str]:
     parts = []
     current_words = []
 
-    for sentence in SENTENCE_SPLIT_PATTERN.split(block):
+    for sentence in split_sentences(block):
         sentence_words = sentence.split()
         if len(current_words) + len(sentence_words) > max_words and current_words:
             parts.append(" ".join(current_words))
@@ -219,6 +384,7 @@ def chunk_text(
     while block_index < len(blocks):
         group_id = block_index
         block = blocks[block_index]
+        current_kind = structure_metadata(block)[0]
         update_structure(block)
         block_words = block.split()
 
@@ -229,7 +395,11 @@ def chunk_text(
             block_index += 1
             continue
 
-        if len(block_words) <= MAX_SHORT_BLOCK_WORDS and block_index + 1 < len(blocks):
+        if (
+            not current_kind
+            and len(block_words) <= MAX_SHORT_BLOCK_WORDS
+            and block_index + 1 < len(blocks)
+        ):
             next_block = blocks[block_index + 1]
             next_kind = structure_metadata(next_block)[0]
             if (
