@@ -19,11 +19,18 @@ RECIPIENT_PARTICLES = {"에게", "께", "한테", "에"}
 OBJECT_PARTICLES = {"을", "를"}
 
 
-kiwi = Kiwi()
+_kiwi: Kiwi | None = None
+
+
+def get_kiwi() -> Kiwi:
+    global _kiwi
+    if _kiwi is None:
+        _kiwi = Kiwi()
+    return _kiwi
 
 
 def noun_phrases(sentence: str) -> list[dict]:
-    analyzed = kiwi.analyze(sentence)
+    analyzed = get_kiwi().analyze(sentence)
     if not analyzed:
         return []
 
