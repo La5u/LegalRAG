@@ -1,15 +1,15 @@
 # LegalRAG
 
-A local Korean-first legal RAG prototype. It ingests Korean law HWPX and TXT files,
-stores chunks and embeddings in Neo4j, retrieves with vector search, and
-generates cited answers through a local Ollama model.
+A local Korean-first legal RAG prototype. It ingests Korean law HWPX, PDF, and
+TXT files, stores chunks and embeddings in Neo4j, retrieves with vector search,
+and generates cited answers through a local Ollama model.
 
 > Technical prototype only. Do not treat generated answers as legal advice.
 
 ## Pipeline
 
 ```text
-HWPX or TXT legal documents
+HWPX, PDF, or TXT legal documents
  ↓
 local text extraction
  ↓
@@ -51,6 +51,21 @@ Linux or macOS:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+```
+
+Windows PowerShell:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+If PowerShell blocks virtualenv activation, run this in the same terminal and
+then activate again:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 Download local models once:
@@ -175,6 +190,14 @@ intfloat/multilingual-e5-small:
   LEGALRAG_EMBEDDING_BATCH_SIZE=64
 ```
 
+Model tradeoff:
+
+| Model | Use when | Tradeoff |
+|---|---|---|
+| `intfloat/multilingual-e5-small` | Fast local iteration and smoke testing | Lower semantic recall, but quick CPU indexing and retrieval |
+| `BAAI/bge-m3` | Higher-quality multilingual legal retrieval experiments | Slower and heavier, but usually better semantic matching |
+| `qwen3.5:4b` | Local answer generation through Ollama | Practical for development, not a legal-quality benchmark |
+
 Other useful settings:
 
 ```bash
@@ -189,18 +212,49 @@ export LEGALRAG_NEO4J_DATABASE="neo4j"
 Neo4j data is stored in the Docker volume `legalrag_neo4j_data`. Logs are stored
 in `legalrag_neo4j_logs`.
 
+## Backup And Restore
+
+Stop the app before backing up Neo4j data.
+
+Create a compressed backup of the Neo4j Docker volume:
+
+```bash
+docker compose stop neo4j
+docker run --rm \
+  -v legalrag_neo4j_data:/data \
+  -v "$PWD":/backup \
+  alpine tar czf /backup/legalrag_neo4j_data.tar.gz -C /data .
+docker compose start neo4j
+```
+
+Restore that backup into the same volume:
+
+```bash
+docker compose stop neo4j
+docker run --rm \
+  -v legalrag_neo4j_data:/data \
+  -v "$PWD":/backup \
+  alpine sh -c "rm -rf /data/* && tar xzf /backup/legalrag_neo4j_data.tar.gz -C /data"
+docker compose start neo4j
+```
+
 ## Documents
 
-Put Korean law HWPX files or plain UTF-8 TXT files in `documents/`. The current
-MVP assumes one file per law or source document. Separate TXT article-title
-exports are not needed when the HWPX export already includes article titles and
-lists.
+Put Korean law HWPX files, selectable-text PDFs, or plain UTF-8 TXT files under
+`documents/raw/`. The indexer reads this folder recursively and ignores
+`documents/excluded/`. The current MVP assumes one file per law or source
+document. Separate TXT article-title exports are not needed when the HWPX export
+already includes article titles and lists.
+
+PDF extraction uses `pypdfium2` by default. The loader also extracts with
+`pdfplumber` and chooses that result when the PDFium text looks weak or when
+pdfplumber preserves more legal text, such as table-heavy text or Hanja.
 
 Use `./scripts/index` when documents, embedding model, or chunking settings change.
 Existing unchanged documents are skipped using Neo4j metadata: source path, file
 timestamp, embedding model, chunking version, and word limit.
 
-The current chunking version is `word-block-v9`. If this value changes in code,
+The current chunking version is `word-block-v11`. If this value changes in code,
 the next `./scripts/index` run rebuilds affected documents.
 
 ## Retrieval Strategies
@@ -214,9 +268,10 @@ The `/ask` endpoint accepts an optional strategy in the JSON body:
 Available strategies:
 
 - `vector`: return only the top vector-search chunks.
-- `hybrid`: GraphRAG mode. Start from vector hits, expand through article
-  `LegalUnit` nodes, add nearby chunk parts, and add graph facts from extracted
-  concepts and relationships.
+- `hybrid`: GraphRAG mode. Start from vector hits, add nearby chunk parts, add
+  graph facts from extracted concepts and relationships, and expand through
+  `LegalUnit` nodes only when the question explicitly asks for article or
+  section-level context.
 
 The browser app labels these modes as `Vector` and `GraphRAG`.
 
