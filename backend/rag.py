@@ -1,4 +1,5 @@
 import logging
+import re
 
 from neo4j import GraphDatabase
 
@@ -34,8 +35,32 @@ from backend.triples import extract_triples
 logger = logging.getLogger(__name__)
 
 
+LEGAL_UNIT_QUERY_PATTERN = re.compile(
+    r"제\d+조(?:의\d+)?|제\d+항|제\d+호|[가-하]목|"
+    r"\bArticle\s+[IVXLCDM\d]+\b|\bSection\s+\d+\b",
+    re.IGNORECASE,
+)
+LEGAL_UNIT_QUERY_TERMS = (
+    "조문",
+    "몇 조",
+    "어느 조",
+    "어느 조문",
+    "article",
+    "section",
+)
+
+
 class RetrievalUnavailable(RuntimeError):
     """Raised when retrieval cannot run because the index is not ready."""
+
+
+def should_expand_legal_units(query: str) -> bool:
+    """Return True when a question explicitly asks for legal-unit context."""
+    normalized_query = query.casefold()
+    return bool(LEGAL_UNIT_QUERY_PATTERN.search(query)) or any(
+        term in normalized_query
+        for term in LEGAL_UNIT_QUERY_TERMS
+    )
 
 
 class LegalRAG:
@@ -49,6 +74,15 @@ class LegalRAG:
             auth=(NEO4J_USER, NEO4J_PASSWORD),
         )
         setup_schema(self._run_write)
+
+    def close(self) -> None:
+        self.driver.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+        self.close()
 
     @property
     def embedding_model(self):
@@ -126,12 +160,23 @@ class LegalRAG:
             WITH documents, deleted_source_paths, collect(legal_relation) AS legal_relations
             FOREACH (legal_relation IN legal_relations | DELETE legal_relation)
             WITH documents, deleted_source_paths
-            OPTIONAL MATCH (node)
-            WHERE (node:LegalUnit OR node:Term OR node:Definition OR node:Chunk)
-                AND node.source_path IN deleted_source_paths
-            WITH documents, collect(node) AS nodes
-            FOREACH (node IN nodes | DETACH DELETE node)
+            OPTIONAL MATCH (chunk:Chunk)
+            WHERE chunk.source_path IN deleted_source_paths
+            WITH documents, deleted_source_paths, collect(chunk) AS chunks
+            OPTIONAL MATCH (definition:Definition)-[:SUPPORTED_BY]->(chunk:Chunk)
+            WHERE chunk.source_path IN deleted_source_paths
+            WITH documents, deleted_source_paths, chunks, collect(definition) AS definitions
+            OPTIONAL MATCH (legal_unit:LegalUnit)
+            WHERE legal_unit.source_path IN deleted_source_paths
+            WITH documents, chunks, definitions, collect(legal_unit) AS legal_units
+            FOREACH (definition IN definitions | DETACH DELETE definition)
+            FOREACH (chunk IN chunks | DETACH DELETE chunk)
+            FOREACH (legal_unit IN legal_units | DETACH DELETE legal_unit)
             FOREACH (document IN documents | DETACH DELETE document)
+            WITH 1 AS _
+            MATCH (term:Term)
+            WHERE NOT (term)--()
+            DETACH DELETE term
             WITH 1 AS _
             MATCH (concept:Concept)
             WHERE NOT (concept)--()
@@ -149,12 +194,23 @@ class LegalRAG:
             WITH document, collect(legal_relation) AS legal_relations
             FOREACH (legal_relation IN legal_relations | DELETE legal_relation)
             WITH document
-            OPTIONAL MATCH (node)
-            WHERE (node:LegalUnit OR node:Term OR node:Definition OR node:Chunk)
-                AND node.source_path = document.source_path
-            WITH document, collect(node) AS nodes
-            FOREACH (node IN nodes | DETACH DELETE node)
+            OPTIONAL MATCH (chunk:Chunk)
+            WHERE chunk.source_path = document.source_path
+            WITH document, collect(chunk) AS chunks
+            OPTIONAL MATCH (definition:Definition)-[:SUPPORTED_BY]->(chunk:Chunk)
+            WHERE chunk.source_path = document.source_path
+            WITH document, chunks, collect(definition) AS definitions
+            OPTIONAL MATCH (legal_unit:LegalUnit)
+            WHERE legal_unit.source_path = document.source_path
+            WITH document, chunks, definitions, collect(legal_unit) AS legal_units
+            FOREACH (definition IN definitions | DETACH DELETE definition)
+            FOREACH (chunk IN chunks | DETACH DELETE chunk)
+            FOREACH (legal_unit IN legal_units | DETACH DELETE legal_unit)
             DETACH DELETE document
+            WITH 1 AS _
+            MATCH (term:Term)
+            WHERE NOT (term)--()
+            DETACH DELETE term
             WITH 1 AS _
             MATCH (concept:Concept)
             WHERE NOT (concept)--()
@@ -237,7 +293,11 @@ class LegalRAG:
                 {
                     "id": f"{source_path}::chunk-{chunk.meta['chunk_number']}",
                     "content": chunk.content,
-                    "embedding": embedding.tolist(),
+                    "embedding": (
+                        embedding.tolist()
+                        if hasattr(embedding, "tolist")
+                        else list(embedding)
+                    ),
                     "chunk_number": chunk.meta["chunk_number"],
                     "document_name": chunk.meta["document_name"],
                     "group_id": chunk.meta["group_id"],
@@ -269,11 +329,8 @@ class LegalRAG:
                 "text": definition.text,
                 "chunk_id": f"{source_path}::chunk-{definition.chunk_number}",
                 "chunk_number": definition.chunk_number,
-                "source_path": source_path,
-                "document_name": document_name,
                 "article_id": chunk_article_ids.get(definition.chunk_number),
                 "article_number": definition.article_number,
-                "article_title": definition.article_title,
             }
             for definition in extract_definitions(chunks)
         ]
@@ -335,8 +392,7 @@ class LegalRAG:
                 legal_unit.title = row.title,
                 legal_unit.order = row.order,
                 legal_unit.source_path = row.source_path,
-                legal_unit.document_name = row.document_name,
-                legal_unit.parent_id = row.parent_id
+                legal_unit.document_name = row.document_name
             WITH document, collect(row) AS rows
             UNWIND rows AS row
             MATCH (legal_unit:LegalUnit {id: row.id})
@@ -370,18 +426,12 @@ class LegalRAG:
             UNWIND $definition_rows AS row
             MERGE (term:Term {id: row.term_id})
             SET
-                term.name = row.term,
-                term.source_path = row.source_path,
-                term.document_name = row.document_name
+                term.name = row.term
             MERGE (definition:Definition {id: row.id})
             SET
                 definition.text = row.text,
                 definition.chunk_number = row.chunk_number,
-                definition.source_path = row.source_path,
-                definition.document_name = row.document_name,
-                definition.article_id = row.article_id,
-                definition.article_number = row.article_number,
-                definition.article_title = row.article_title
+                definition.article_number = row.article_number
             MERGE (term)-[:DEFINED_AS]->(definition)
             WITH row, definition
             MATCH (chunk:Chunk {id: row.chunk_id})
@@ -426,8 +476,39 @@ class LegalRAG:
 
     def _retrieve_graphrag(self, query: str) -> list[Document]:
         chunks = self._add_paragraph_neighbors(self._retrieve_vector_chunks(query))
-        chunks = self._expand_legal_units(chunks)
-        return chunks + graph_fact_documents(self._run_read, query, chunks)
+        if should_expand_legal_units(query):
+            chunks = self._expand_legal_units(chunks)
+        graph_facts = graph_fact_documents(self._run_read, query, chunks)
+        return self._merge_graph_facts(chunks, graph_facts)
+
+    def _merge_graph_facts(
+        self,
+        chunks: list[Document],
+        graph_facts: list[Document],
+    ) -> list[Document]:
+        seen_fact_keys = set()
+        ranked_facts = []
+        for graph_fact in sorted(
+            graph_facts,
+            key=lambda document: document.score or 0,
+            reverse=True,
+        ):
+            key = (
+                graph_fact.meta.get("source_path"),
+                graph_fact.content,
+            )
+            if key in seen_fact_keys:
+                continue
+            seen_fact_keys.add(key)
+            ranked_facts.append(graph_fact)
+
+        fact_limit = max(1, self.top_k)
+        leading_chunks = min(2, len(chunks))
+        return (
+            chunks[:leading_chunks]
+            + ranked_facts[:fact_limit]
+            + chunks[leading_chunks:]
+        )
 
     def _retrieve_vector_chunks(self, query: str) -> list[Document]:
         """Retrieve chunks by vector similarity only."""
