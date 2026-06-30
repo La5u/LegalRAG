@@ -85,6 +85,9 @@ def write_relation_edges(
     source_key: str,
     target_key: str,
 ) -> None:
+    if relation not in RELATION_TYPES:
+        raise ValueError(f"Unsupported graph relation: {relation}")
+
     run_write(
         f"""
         UNWIND $rows AS row
@@ -131,6 +134,8 @@ def graph_fact_documents(run_read, query: str, chunks: list[Document]) -> list[D
             source.name AS source,
             type(relation) AS relation,
             target.name AS target,
+            relation_priority AS relation_priority,
+            article_priority AS article_priority,
             relation.sentence AS sentence,
             relation.document_name AS document_name,
             relation.source_path AS source_path,
@@ -187,6 +192,12 @@ def graph_fact_documents(run_read, query: str, chunks: list[Document]) -> list[D
                 "article_title": None,
                 "article_order": None,
             },
+            score=(
+                0.95
+                - record["relation_priority"] * 0.1
+                - record["article_priority"] * 0.05
+                - index * 0.001
+            ),
         )
         for index, record in enumerate(relation_records, start=1)
     ]
@@ -195,18 +206,20 @@ def graph_fact_documents(run_read, query: str, chunks: list[Document]) -> list[D
         definition_records = run_read(
             """
             MATCH (term:Term)-[:DEFINED_AS]->(definition:Definition)-[:SUPPORTED_BY]->(chunk:Chunk)
+            OPTIONAL MATCH (definition)-[:DEFINED_IN]->(article:LegalUnit)
+            WITH term, definition, chunk, article
             WHERE chunk.id IN $chunk_ids
-                OR definition.article_id IN $legal_unit_ids
+                OR article.id IN $legal_unit_ids
                 OR definition.article_number IN $article_numbers
                 OR any(query_term IN $query_terms WHERE term.name CONTAINS query_term)
             RETURN
                 term.name AS term,
                 definition.text AS text,
-                definition.document_name AS document_name,
-                definition.source_path AS source_path,
+                chunk.document_name AS document_name,
+                chunk.source_path AS source_path,
                 chunk.id AS chunk_id,
                 definition.chunk_number AS chunk_number,
-                definition.article_id AS article_id,
+                article.id AS article_id,
                 definition.article_number AS article_number
             ORDER BY definition.chunk_number
             LIMIT 10
@@ -252,6 +265,7 @@ def graph_fact_documents(run_read, query: str, chunks: list[Document]) -> list[D
                 "article_title": None,
                 "article_order": None,
             },
+            score=0.9 - index * 0.001,
         )
         for index, record in enumerate(definition_records, start=1)
     ]
