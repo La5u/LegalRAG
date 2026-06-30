@@ -34,11 +34,6 @@ SMOKE_STRUCTURE = {
 # Document -> LegalUnit -> LegalUnit -> Chunk.
 
 
-class FakeVector(list):
-    def tolist(self) -> list[float]:
-        return list(self)
-
-
 class FakeEmbeddingModel:
     """Small stand-in for the real embedding model during graph smoke tests."""
 
@@ -46,7 +41,7 @@ class FakeEmbeddingModel:
         self.dimensions = dimensions
 
     def encode(self, texts, **_kwargs):
-        vector = FakeVector([0.0] * self.dimensions)
+        vector = [0.0] * self.dimensions
         if isinstance(texts, str):
             return vector
         return [vector for _text in texts]
@@ -83,7 +78,7 @@ def assert_constraints(rag: LegalRAG) -> None:
     pass_message("Neo4j constraints exist")
 
 
-def vector_dimensions(rag: LegalRAG) -> int:
+def vector_dimensions(rag: LegalRAG, fallback_dimensions: int) -> int:
     records = rag._run_read(
         """
         SHOW VECTOR INDEXES
@@ -93,7 +88,7 @@ def vector_dimensions(rag: LegalRAG) -> int:
         """,
         index_name=NEO4J_VECTOR_INDEX,
     )
-    return records[0]["dimensions"] if records else 384
+    return records[0]["dimensions"] if records else fallback_dimensions
 
 
 def smoke_chunk(
@@ -120,7 +115,7 @@ def smoke_chunk(
 
 def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
     """Create a tiny graph tree, verify it, then delete it."""
-    dimensions = vector_dimensions(rag)
+    dimensions = vector_dimensions(rag, 16)
     rag._embedding_model = FakeEmbeddingModel(dimensions)
     rag._embedding_dimensions = dimensions
     rag.delete_document(TEMP_SOURCE_PATH)
@@ -210,10 +205,13 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
 
         definition_records = rag._run_read(
             """
-            MATCH (term:Term {source_path: $source_path, name: "테스트용어"})
+            MATCH (term:Term {name: "테스트용어"})
                 -[:DEFINED_AS]->(definition:Definition)
                 -[:DEFINED_IN]->(:LegalUnit {kind: "article", number: "제2조"})
-            MATCH (definition)-[:SUPPORTED_BY]->(:Chunk {chunk_number: 3})
+            MATCH (definition)-[:SUPPORTED_BY]->(:Chunk {
+                source_path: $source_path,
+                chunk_number: 3
+            })
             RETURN term.name AS term
             """,
             source_path=TEMP_SOURCE_PATH,
