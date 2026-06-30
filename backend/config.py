@@ -58,17 +58,24 @@ OLLAMA_THINK = env_bool("LEGALRAG_OLLAMA_THINK", "false")
 DEFAULT_MAX_WORDS = int(
     os.getenv("LEGALRAG_MAX_WORDS", EMBEDDING_PROFILE.get("max_words", "180"))
 )
-# Bump this whenever chunk_text or legal-structure metadata changes.
-CHUNKING_VERSION = "word-block-v9"
+# Bump this whenever chunk text or indexed graph metadata changes.
+CHUNKING_VERSION = "word-block-v11"
+
+_RUNTIME_ENVIRONMENT_CONFIGURED = False
 
 if DEFAULT_MAX_WORDS <= 0:
     raise ValueError("LEGALRAG_MAX_WORDS must be greater than 0.")
 
 
 def configure_runtime_environment() -> None:
+    global _RUNTIME_ENVIRONMENT_CONFIGURED
+    if _RUNTIME_ENVIRONMENT_CONFIGURED:
+        return
+
     project_root = Path(__file__).resolve().parent.parent
     os.environ["HF_HOME"] = str(project_root / ".cache" / "huggingface")
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    _RUNTIME_ENVIRONMENT_CONFIGURED = True
