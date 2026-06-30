@@ -4,3 +4,5 @@ sentence-transformers
 neo4j
 httpx
 kiwipiepy
+pypdfium2
+pdfplumber
