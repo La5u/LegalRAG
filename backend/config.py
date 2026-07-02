@@ -6,6 +6,15 @@ def env_bool(name: str, default: str) -> bool:
     return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
 
 
+def configure_runtime_environment() -> None:
+    project_root = Path(__file__).resolve().parent.parent
+    os.environ.setdefault("HF_HOME", str(project_root / ".cache" / "huggingface"))
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+
 EMBEDDING_MODEL = os.getenv(
     "LEGALRAG_EMBEDDING_MODEL",
     "intfloat/multilingual-e5-small",
@@ -14,19 +23,19 @@ EMBEDDING_PROFILES = {
     "BAAI/bge-m3": {
         "max_words": "260",
         "top_k": "4",
-        "paragraph_neighbors": "1",
         "batch_size": "16",
     },
     "intfloat/multilingual-e5-small": {
         "max_words": "140",
         "top_k": "6",
-        "paragraph_neighbors": "1",
         "batch_size": "64",
     },
 }
 EMBEDDING_PROFILE = EMBEDDING_PROFILES.get(EMBEDDING_MODEL, {})
 GENERATION_MODEL = os.getenv("LEGALRAG_GENERATION_MODEL", "qwen3.5:4b")
+JUDGE_MODEL = os.getenv("LEGALRAG_JUDGE_MODEL", "qwen2.5:1.5b-instruct")
 OLLAMA_URL = os.getenv("LEGALRAG_OLLAMA_URL", "http://127.0.0.1:11434")
+OLLAMA_KEEP_ALIVE = os.getenv("LEGALRAG_OLLAMA_KEEP_ALIVE", "1m")
 
 NEO4J_URI = os.getenv("LEGALRAG_NEO4J_URI", "bolt://127.0.0.1:7687")
 NEO4J_USER = os.getenv("LEGALRAG_NEO4J_USER", "neo4j")
@@ -38,12 +47,8 @@ NEO4J_VECTOR_INDEX = os.getenv(
 )
 
 TOP_K = int(os.getenv("LEGALRAG_TOP_K", EMBEDDING_PROFILE.get("top_k", "4")))
-PARAGRAPH_NEIGHBORS = int(
-    os.getenv(
-        "LEGALRAG_PARAGRAPH_NEIGHBORS",
-        EMBEDDING_PROFILE.get("paragraph_neighbors", "1"),
-    )
-)
+RETRIEVAL_STRATEGIES = ("vector", "graph", "neuro_symbolic")
+RETRIEVAL_STRATEGY_ALIASES = {"hybrid": "graph"}
 EMBEDDING_BATCH_SIZE = int(
     os.getenv(
         "LEGALRAG_EMBEDDING_BATCH_SIZE",
@@ -52,30 +57,18 @@ EMBEDDING_BATCH_SIZE = int(
 )
 TEMPERATURE = float(os.getenv("LEGALRAG_TEMPERATURE", "0.1"))
 CONTEXT_WINDOW = int(os.getenv("LEGALRAG_CONTEXT_WINDOW", "4096"))
-MAX_OUTPUT_TOKENS = int(os.getenv("LEGALRAG_MAX_OUTPUT_TOKENS", "300"))
+MAX_OUTPUT_TOKENS = int(os.getenv("LEGALRAG_MAX_OUTPUT_TOKENS", "700"))
 OLLAMA_THINK = env_bool("LEGALRAG_OLLAMA_THINK", "false")
 
 DEFAULT_MAX_WORDS = int(
     os.getenv("LEGALRAG_MAX_WORDS", EMBEDDING_PROFILE.get("max_words", "180"))
 )
 # Bump this whenever chunk text or indexed graph metadata changes.
-CHUNKING_VERSION = "word-block-v11"
-
-_RUNTIME_ENVIRONMENT_CONFIGURED = False
+CHUNKING_VERSION = "word-block-v14-boundary-triples"
 
 if DEFAULT_MAX_WORDS <= 0:
     raise ValueError("LEGALRAG_MAX_WORDS must be greater than 0.")
 
 
-def configure_runtime_environment() -> None:
-    global _RUNTIME_ENVIRONMENT_CONFIGURED
-    if _RUNTIME_ENVIRONMENT_CONFIGURED:
-        return
-
-    project_root = Path(__file__).resolve().parent.parent
-    os.environ["HF_HOME"] = str(project_root / ".cache" / "huggingface")
-    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    _RUNTIME_ENVIRONMENT_CONFIGURED = True
+def normalize_retrieval_strategy(strategy: str) -> str:
+    return RETRIEVAL_STRATEGY_ALIASES.get(strategy, strategy)

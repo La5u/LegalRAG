@@ -38,14 +38,18 @@ def compare_pair(pdf_path: Path) -> None:
         print(f"no matching HWPX for {pdf_path}")
         return
 
-    hwpx_text = load_hwpx(hwpx_path)
+    try:
+        hwpx_text = load_hwpx(hwpx_path)
+    except Exception as error:
+        print(f"failed to load HWPX {hwpx_path}: {error}")
+        return
     pdfium_text = extract_pdf_with_pdfium(pdf_path)
     pdfplumber_text, pdfplumber_table_count = extract_pdfplumber_parts(pdf_path)
     loaded_pdf_text = load_pdf(pdf_path)
 
     print(f"pdf: {pdf_path.relative_to(PROJECT_ROOT)}")
     print(f"hwpx: {hwpx_path.relative_to(PROJECT_ROOT)}")
-    print(f"hwpx: {pdf_text_quality(hwpx_text)}")
+    print(f"hwpx quality: {pdf_text_quality(hwpx_text)}")
     print(f"pdfium: {pdf_text_quality(pdfium_text)}")
     print(f"pdfplumber: {pdf_text_quality(pdfplumber_text)}")
     print(f"pdfplumber tables: {pdfplumber_table_count}")

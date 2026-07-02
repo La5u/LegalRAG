@@ -4,85 +4,15 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-PYTHON="$PROJECT_ROOT/.venv/bin/python"
+source "$PROJECT_ROOT/scripts/lib/runtime.sh"
+source "$PROJECT_ROOT/scripts/lib/neo4j.sh"
+source "$PROJECT_ROOT/scripts/lib/ollama.sh"
+
+PYTHON="$(resolve_python)"
 OLLAMA_LOG="/tmp/legalrag-ollama.log"
-
-if [[ ! -x "$PYTHON" ]]; then
-  echo "Missing virtual environment. Create it with: python3 -m venv .venv"
-  exit 1
-fi
-
-if ! docker info >/dev/null 2>&1; then
-  if command -v systemctl >/dev/null 2>&1; then
-    sudo systemctl start docker
-  fi
-fi
-
-if docker info >/dev/null 2>&1; then
-  docker compose up -d neo4j
-else
-  sudo docker compose up -d neo4j
-fi
-
-echo "Waiting for Neo4j Bolt at 127.0.0.1:7687..."
-"$PYTHON" - <<'PY'
-from time import sleep
-
-from backend.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
-from neo4j import GraphDatabase
-
-for attempt in range(60):
-    try:
-        with GraphDatabase.driver(
-            NEO4J_URI,
-            auth=(NEO4J_USER, NEO4J_PASSWORD),
-        ) as driver:
-            driver.verify_connectivity()
-        break
-    except Exception:
-        if attempt == 59:
-            raise SystemExit("Neo4j did not become ready within 60 seconds.")
-        sleep(1)
-PY
-
-if command -v ollama >/dev/null 2>&1; then
-  if ! "$PYTHON" - <<'PY' >/dev/null 2>&1
-from urllib.request import urlopen
-urlopen("http://127.0.0.1:11434/api/tags", timeout=1).read()
-PY
-  then
-    nohup ollama serve >"$OLLAMA_LOG" 2>&1 &
-    echo "Started Ollama. Logs: $OLLAMA_LOG"
-  fi
-
-  echo "Waiting for Ollama model..."
-  "$PYTHON" - <<'PY'
-import json
-from time import sleep
-from urllib.request import urlopen
-
-from backend.config import GENERATION_MODEL, OLLAMA_URL
-
-for attempt in range(60):
-    try:
-        with urlopen(f"{OLLAMA_URL}/api/tags", timeout=1) as response:
-            data = json.loads(response.read())
-        model_names = {model["name"] for model in data.get("models", [])}
-        if GENERATION_MODEL in model_names:
-            break
-    except Exception:
-        pass
-
-    if attempt == 59:
-        raise SystemExit(
-            f"Ollama model {GENERATION_MODEL!r} is not ready. "
-            f"Run: ollama pull {GENERATION_MODEL}"
-        )
-    sleep(1)
-PY
-else
-  echo "Ollama is not installed or not on PATH."
-  exit 1
-fi
+ensure_neo4j
+wait_neo4j "$PYTHON"
+ensure_ollama "$PYTHON" "$OLLAMA_LOG"
+wait_ollama_model "$PYTHON"
 
 exec "$PYTHON" -m uvicorn backend.web:app --host 127.0.0.1 --port 8000

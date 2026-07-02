@@ -41,6 +41,27 @@ def setup_schema(run_write) -> None:
         REQUIRE concept.name IS UNIQUE
         """
     )
+    run_write(
+        """
+        CREATE CONSTRAINT case_source_path IF NOT EXISTS
+        FOR (case_node:Case)
+        REQUIRE case_node.source_path IS UNIQUE
+        """
+    )
+    run_write(
+        """
+        CREATE CONSTRAINT holding_id IF NOT EXISTS
+        FOR (holding:Holding)
+        REQUIRE holding.id IS UNIQUE
+        """
+    )
+    run_write(
+        """
+        CREATE CONSTRAINT citation_id IF NOT EXISTS
+        FOR (citation:Citation)
+        REQUIRE citation.id IS UNIQUE
+        """
+    )
 
 def setup_vector_index(
     run_write,
@@ -96,8 +117,8 @@ def vector_index_exists(run_read, index_name: str) -> bool:
         SHOW VECTOR INDEXES
         YIELD name
         WHERE name = $index_name
-        RETURN count(*) AS count
+        RETURN name
         """,
         index_name=index_name,
     )
-    return bool(records and records[0]["count"])
+    return bool(records)

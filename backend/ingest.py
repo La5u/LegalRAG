@@ -8,22 +8,24 @@ import pdfplumber
 import pypdfium2 as pdfium
 
 from backend.config import DEFAULT_MAX_WORDS
+from backend.constants import ARTICLE_PATTERN
 from backend.text import split_sentences
 
 MAX_SHORT_BLOCK_WORDS = 50
 KOREAN_PATTERN = re.compile(r"[가-힣]")
 HANJA_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
-LEGAL_ARTICLE_PATTERN = re.compile(r"제\d+조(?:의\d+)?")
 PDF_PARAGRAPH_START_PATTERN = re.compile(
     r"^(제\d+장|제\d+절|제\d+조(?:의\d+)?|【[^】]+】|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\d+\.|[가-하]\.)"
 )
 PDF_NOISE_LINE_PATTERN = re.compile(
     r"^(법제처\s*\d*\s*국가법령정보센터|법제처\s*-?\s*/\s*-\s*국가법령정보센터|-?\s*\d+\s*/\s*\d+\s*-?)$"
 )
+PDF_ARTIFACT_LINE_PATTERN = re.compile(r"^[\d. ]+>$")
+PDF_LEADER_LINE_PATTERN = re.compile(r"(?:[.·]\s*){8,}")
 SPACED_DIGITS_PATTERN = re.compile(r"(?<!\d)(\d(?:\s+\d)+)(?!\d)")
 REPLACEMENT_CHARACTER = "\ufffd"
+REPLACEMENT_RUN_PATTERN = re.compile(f"{REPLACEMENT_CHARACTER}{{3,}}")
 MIN_PDF_TEXT_LENGTH = 200
-MIN_PDF_ARTICLES_FOR_LEGAL_TEXT = 1
 # Korean law structure used here:
 # 법령 = law/document, 장 = chapter, 절 = section, 조문 = article,
 # 항 = clause, 호 = item, 목 = sub-item.
@@ -97,7 +99,12 @@ def load_hwpx(path: Path) -> str:
 
         for section_name in section_names:
             xml_text = hwpx.read(section_name).decode("utf-8")
-            paragraphs.extend(extract_hwpx_paragraphs(xml_text))
+            try:
+                paragraphs.extend(extract_hwpx_paragraphs(xml_text))
+            except ET.ParseError as error:
+                raise ValueError(
+                    f"Malformed XML in {path.name}:{section_name}: {error}"
+                ) from error
 
     # 조문 = Article.
     # Korean laws usually use "제1조", "제2조" and similar article markers.
@@ -118,6 +125,12 @@ def compact_spaced_digits(text: str) -> str:
 
 def clean_pdf_line(line: str) -> str:
     line = " ".join(line.split())
+    if (
+        PDF_ARTIFACT_LINE_PATTERN.match(line)
+        or PDF_LEADER_LINE_PATTERN.search(line)
+        or REPLACEMENT_RUN_PATTERN.search(line)
+    ):
+        return ""
     line = compact_spaced_digits(line)
     return line.strip()
 
@@ -161,7 +174,7 @@ def pdf_text_quality(text: str) -> dict[str, int]:
         "length": len(text),
         "korean": len(KOREAN_PATTERN.findall(text)),
         "hanja": len(HANJA_PATTERN.findall(text)),
-        "articles": len(LEGAL_ARTICLE_PATTERN.findall(text)),
+        "articles": len(ARTICLE_PATTERN.findall(text)),
         "replacement": text.count(REPLACEMENT_CHARACTER),
     }
 
@@ -212,30 +225,21 @@ def extract_pdfplumber_parts(path: Path) -> tuple[str, int]:
     return normalize_pdf_text("\n\n".join(pages)), table_count
 
 
-def pdfplumber_table_count(path: Path) -> int:
-    table_count = 0
-
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            table_count += len(page.find_tables())
-
-    return table_count
-
-
-def extract_pdf_with_pdfplumber(path: Path) -> str:
-    text, _table_count = extract_pdfplumber_parts(path)
-    return text
-
-
-def should_use_pdfplumber(
-    pdfium_text: str, pdfplumber_text: str, pdfplumber_table_count: int
+def _prefer_pdfplumber(
+    pdfium_text: str,
+    pdfplumber_text: str | None = None,
+    pdfplumber_table_count: int = 0,
 ) -> bool:
     pdfium_quality = pdf_text_quality(pdfium_text)
-    pdfplumber_quality = pdf_text_quality(pdfplumber_text)
     if pdfium_quality["length"] < MIN_PDF_TEXT_LENGTH:
         return True
     if pdfium_quality["replacement"] > 0:
         return True
+    if pdfium_quality["korean"] == 0:
+        return True
+    if pdfplumber_text is None:
+        return False
+    pdfplumber_quality = pdf_text_quality(pdfplumber_text)
     if pdfplumber_quality["hanja"] > pdfium_quality["hanja"]:
         return True
     if pdfplumber_quality["articles"] > pdfium_quality["articles"]:
@@ -247,18 +251,10 @@ def should_use_pdfplumber(
 
 def load_pdf(path: Path) -> str:
     pdfium_text = extract_pdf_with_pdfium(path)
-    pdfium_quality = pdf_text_quality(pdfium_text)
-    should_check_pdfplumber = (
-        pdfium_quality["length"] < MIN_PDF_TEXT_LENGTH
-        or pdfium_quality["replacement"] > 0
-        or pdfium_quality["articles"] < MIN_PDF_ARTICLES_FOR_LEGAL_TEXT
-        or pdfplumber_table_count(path) > 0
-    )
-    if not should_check_pdfplumber:
+    if not _prefer_pdfplumber(pdfium_text):
         return pdfium_text
-
-    pdfplumber_text, pdfplumber_table_count = extract_pdfplumber_parts(path)
-    if should_use_pdfplumber(pdfium_text, pdfplumber_text, pdfplumber_table_count):
+    pdfplumber_text, pdfplumber_table_count_ = extract_pdfplumber_parts(path)
+    if _prefer_pdfplumber(pdfium_text, pdfplumber_text, pdfplumber_table_count_):
         return pdfplumber_text
     return pdfium_text
 
@@ -306,92 +302,94 @@ def structure_metadata(block: str) -> tuple[str | None, str | None, str | None]:
     return None, None, None
 
 
+@dataclass
+class ChunkingState:
+    chunks: list[Document] = field(default_factory=list)
+    structure_counts: dict = field(default_factory=dict)
+    structure_orders: dict = field(default_factory=dict)
+    current_structures: dict = field(
+        default_factory=lambda: {
+            kind: {"number": None, "title": None, "order": None}
+            for kind in STRUCTURE_KINDS
+        }
+    )
+
+
+def update_chunking_structure(state: ChunkingState, block: str) -> None:
+    kind, number, title = structure_metadata(block)
+    if not kind:
+        return
+
+    kind_index = STRUCTURE_KINDS.index(kind)
+    parent_key = tuple(
+        state.current_structures[parent_kind]["number"]
+        for parent_kind in STRUCTURE_KINDS[:kind_index]
+    )
+    count_key = (kind, parent_key)
+    order_key = (kind, parent_key, number)
+    if order_key not in state.structure_orders:
+        state.structure_counts[count_key] = state.structure_counts.get(count_key, 0) + 1
+        state.structure_orders[order_key] = state.structure_counts[count_key]
+
+    state.current_structures[kind] = {
+        "number": number,
+        "title": title,
+        "order": state.structure_orders[order_key],
+    }
+    for child_kind in STRUCTURE_KINDS[kind_index + 1 :]:
+        state.current_structures[child_kind] = {
+            "number": None,
+            "title": None,
+            "order": None,
+        }
+
+
+def add_chunk(
+    state: ChunkingState,
+    content: str,
+    group_id: int,
+    part: int,
+    document_name: str,
+) -> None:
+    meta = {
+        "chunk_number": len(state.chunks) + 1,
+        "document_name": document_name,
+        "group_id": group_id,
+        "part": part,
+    }
+    for kind in STRUCTURE_KINDS:
+        structure = state.current_structures[kind]
+        meta[f"{kind}_number"] = structure["number"]
+        meta[f"{kind}_title"] = structure["title"]
+        meta[f"{kind}_order"] = structure["order"]
+
+    state.chunks.append(Document(content=content, meta=meta))
+
+
 def chunk_text(
     text: str,
     max_words: int = DEFAULT_MAX_WORDS,
     document_name: str = "Unknown document",
 ) -> list[Document]:
     blocks = [
-        " ".join(block.split())
+        normalized_block
         for block in re.split(r"(?:\n\s*\n+|[ \t]{4,})", text)
-        if block.strip()
+        if (normalized_block := " ".join(block.split()))
     ]
-    chunks = []
+    state = ChunkingState()
     block_index = 0
-    structure_counts = {}
-    structure_orders = {}
-    current_structures = {
-        kind: {"number": None, "title": None, "order": None}
-        for kind in STRUCTURE_KINDS
-    }
-
-    def update_structure(block: str) -> None:
-        # When a new legal structure heading begins, remember it.
-        # Later chunks inherit this metadata until a newer heading appears.
-        kind, number, title = structure_metadata(block)
-        if not kind:
-            return
-
-        kind_index = STRUCTURE_KINDS.index(kind)
-        parent_key = tuple(
-            current_structures[parent_kind]["number"]
-            for parent_kind in STRUCTURE_KINDS[:kind_index]
-        )
-        count_key = (kind, parent_key)
-        order_key = (kind, parent_key, number)
-        if order_key not in structure_orders:
-            structure_counts[count_key] = structure_counts.get(count_key, 0) + 1
-            structure_orders[order_key] = structure_counts[count_key]
-
-        current_structures[kind] = {
-            "number": number,
-            "title": title,
-            "order": structure_orders[order_key],
-        }
-        for child_kind in STRUCTURE_KINDS[kind_index + 1 :]:
-            current_structures[child_kind] = {
-                "number": None,
-                "title": None,
-                "order": None,
-            }
-
-    def add_chunk(
-        content: str,
-        group_id: int,
-        part: int,
-    ) -> None:
-        meta = {
-            "chunk_number": len(chunks) + 1,
-            "document_name": document_name,
-            "group_id": group_id,
-            "part": part,
-        }
-        for kind in STRUCTURE_KINDS:
-            structure = current_structures[kind]
-            meta[f"{kind}_number"] = structure["number"]
-            meta[f"{kind}_title"] = structure["title"]
-            meta[f"{kind}_order"] = structure["order"]
-
-        chunks.append(
-            Document(
-                content=content,
-                # These fields are the bridge from plain chunks to the graph:
-                # Structure nodes are created from them during Neo4j indexing.
-                meta=meta,
-            )
-        )
 
     while block_index < len(blocks):
         group_id = block_index
         block = blocks[block_index]
         current_kind = structure_metadata(block)[0]
-        update_structure(block)
+        update_chunking_structure(state, block)
         block_words = block.split()
 
         if len(block_words) > max_words:
             parts = split_long_block(block, max_words)
             for part, content in enumerate(parts):
-                add_chunk(content, group_id, part)
+                add_chunk(state, content, group_id, part, document_name)
             block_index += 1
             continue
 
@@ -404,12 +402,13 @@ def chunk_text(
             next_kind = structure_metadata(next_block)[0]
             if (
                 not next_kind
+                and not any(structure_metadata(part.strip())[0] for part in block.splitlines())
                 and len(block_words) + len(next_block.split()) <= max_words
             ):
                 block = f"{block}\n\n{next_block}"
                 block_index += 1
 
-        add_chunk(block, group_id, 0)
+        add_chunk(state, block, group_id, 0, document_name)
         block_index += 1
 
-    return chunks
+    return state.chunks

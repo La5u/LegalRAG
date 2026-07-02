@@ -6,10 +6,13 @@ from time import perf_counter
 from backend.rag import LegalRAG
 from backend.ingest import Document
 from backend.config import NEO4J_VECTOR_INDEX
+from backend.graph_retrieve import graph_fact_documents
 from backend.records import document_from_record
+from backend.retrieval import expand_legal_units
+from backend.routing import classify_query
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-TEMP_SOURCE_PATH = "documents/_smoke.hwpx"
+TEMP_SOURCE_PATH = "documents/raw/statutes/_smoke.hwpx"
 REQUIRED_CONSTRAINTS = {
     "concept_name",
     "document_source_path",
@@ -52,7 +55,7 @@ def pass_message(message: str) -> None:
 
 
 def fail(message: str) -> None:
-    raise SystemExit(f"FAIL {message}")
+    raise AssertionError(f"FAIL {message}")
 
 
 def compile_backend() -> None:
@@ -115,9 +118,6 @@ def smoke_chunk(
 
 def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
     """Create a tiny graph tree, verify it, then delete it."""
-    dimensions = vector_dimensions(rag, 16)
-    rag._embedding_model = FakeEmbeddingModel(dimensions)
-    rag._embedding_dimensions = dimensions
     rag.delete_document(TEMP_SOURCE_PATH)
 
     chunks = [
@@ -130,7 +130,7 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
         ),
         smoke_chunk(
             2,
-            "테스트 목적을 추가로 설명한다.",
+            "개인정보처리자는 정보주체에게 테스트 사실을 통지하여야 한다.",
             "제1조",
             "목적",
             1,
@@ -152,7 +152,8 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
                 -[:CONTAINS]->(:LegalUnit {kind: "chapter"})
                 -[:CONTAINS]->(:LegalUnit {kind: "section"})
                 -[:CONTAINS]->(article:LegalUnit {kind: "article"})
-                -[:HAS_CHUNK]->(chunk:Chunk)
+            MATCH (article)-[:CONTAINS*0..3]->(unit:LegalUnit)
+                -[:SUPPORTED_BY]->(chunk:Chunk)
             RETURN article.order AS article_order,
                    article.number AS article_number,
                    count(chunk) AS chunk_count
@@ -174,27 +175,17 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
                    chunk.group_id AS group_id,
                    chunk.part AS part,
                    chunk.source_path AS source_path,
-                   chunk.legal_unit_id AS legal_unit_id,
-                   chunk.chapter_id AS chapter_id,
-                   chunk.chapter_number AS chapter_number,
-                   chunk.chapter_title AS chapter_title,
-                   chunk.chapter_order AS chapter_order,
-                   chunk.section_id AS section_id,
-                   chunk.section_number AS section_number,
-                   chunk.section_title AS section_title,
-                   chunk.section_order AS section_order,
-                   chunk.article_id AS article_id,
-                   chunk.article_number AS article_number,
-                   chunk.article_title AS article_title,
-                   chunk.article_order AS article_order,
                    1.0 AS score
             """,
             source_path=TEMP_SOURCE_PATH,
         )
         if not seed_records:
             fail("missing seed chunk for graph expansion check")
-        expanded_chunks = rag._expand_legal_units(
-            [document_from_record(seed_records[0])]
+        expanded_chunks = expand_legal_units(
+            rag._run_read,
+            [document_from_record(seed_records[0])],
+            classify_query("제1조"),
+            [],
         )
         expanded_numbers = [
             chunk.meta["chunk_number"]
@@ -219,6 +210,28 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
         found_terms = [record["term"] for record in definition_records]
         if found_terms != ["테스트용어"]:
             fail(f"unexpected definition graph result: {found_terms}")
+
+        obligation_records = rag._run_read(
+            """
+            MATCH (:Concept {name: "개인정보처리자"})
+                -[relation:MUST_NOTIFY]->(:Concept {name: "정보주체"})
+            WHERE relation.source_path = $source_path
+                AND relation.chunk_number = 2
+            RETURN type(relation) AS relation
+            """,
+            source_path=TEMP_SOURCE_PATH,
+        )
+        found_relations = [record["relation"] for record in obligation_records]
+        if found_relations != ["MUST_NOTIFY"]:
+            fail(f"unexpected obligation graph result: {found_relations}")
+
+        graph_facts = graph_fact_documents(
+            rag._run_read,
+            "개인정보처리자의 통지 의무",
+            [document_from_record(seed_records[0])],
+        )
+        if not any("-MUST_NOTIFY->" in fact.content for fact in graph_facts):
+            fail("missing obligation graph fact document")
     finally:
         rag.delete_document(TEMP_SOURCE_PATH)
 
@@ -246,7 +259,7 @@ def assert_exact_article_lookup(
     records = rag._run_read(
         """
         MATCH (document:Document)-[:CONTAINS*1..3]->(article:LegalUnit {kind: "article"})
-            -[:HAS_CHUNK]->(:Chunk)
+        MATCH (article)-[:CONTAINS*0..3]->(:LegalUnit)-[:SUPPORTED_BY]->(:Chunk)
         WHERE document.name CONTAINS $doc_keyword
             AND article.number = $article_number
         RETURN count(article) AS count
@@ -268,7 +281,7 @@ def assert_phrase_article_lookup(
     records = rag._run_read(
         """
         MATCH (document:Document)-[:CONTAINS*1..3]->(article:LegalUnit {kind: "article"})
-        MATCH (article)-[:CONTAINS*0..3]->(unit:LegalUnit)-[:HAS_CHUNK]->(chunk:Chunk)
+        MATCH (article)-[:CONTAINS*0..3]->(unit:LegalUnit)-[:SUPPORTED_BY]->(chunk:Chunk)
         WHERE document.name CONTAINS $doc_keyword
             AND chunk.content CONTAINS $phrase
         RETURN article.order AS article_order,
@@ -339,12 +352,19 @@ def main() -> None:
     if args.compile_only:
         return
 
-    rag = LegalRAG()
-    assert_constraints(rag)
+    with LegalRAG() as rag:
+        assert_constraints(rag)
+        dimensions = vector_dimensions(rag, 16)
+        if not args.skip_lookups:
+            assert_article_questions(rag)
+
     if not args.skip_write:
-        assert_tree_write_and_cleanup(rag)
-    if not args.skip_lookups:
-        assert_article_questions(rag)
+        fake_model = FakeEmbeddingModel(dimensions)
+        with LegalRAG(
+            embedding_model=fake_model,
+            embedding_dimensions=dimensions,
+        ) as rag:
+            assert_tree_write_and_cleanup(rag)
 
 
 if __name__ == "__main__":

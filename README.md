@@ -74,6 +74,7 @@ Download local models once:
 HF_HOME=.cache/huggingface python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"
 HF_HOME=.cache/huggingface python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
 ollama pull qwen3.5:4b
+ollama pull qwen2.5:1.5b-instruct
 ```
 
 ## Run
@@ -114,6 +115,14 @@ Run the local smoke checks after code changes:
 LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m backend.smoke
 ```
 
+Common evaluation runs:
+
+```bash
+./scripts/eval curated retrieval
+./scripts/eval codex retrieval
+python -m evaluation.report --results /tmp/legalrag-eval/multilingual-e5-small_curated_retrieval.jsonl
+```
+
 ## How To Test
 
 Quick backend smoke test:
@@ -135,7 +144,7 @@ Expected output:
 ```text
 PASS backend modules compile
 PASS Neo4j constraints exist
-PASS temporary Document -> LegalUnit -> Chunk tree writes and cleans up
+PASS temporary Document -> LegalUnit -> SourceChunk tree writes and cleans up
 PASS 10 article graph lookups pass
 ```
 
@@ -196,7 +205,8 @@ Model tradeoff:
 |---|---|---|
 | `intfloat/multilingual-e5-small` | Fast local iteration and smoke testing | Lower semantic recall, but quick CPU indexing and retrieval |
 | `BAAI/bge-m3` | Higher-quality multilingual legal retrieval experiments | Slower and heavier, but usually better semantic matching |
-| `qwen3.5:4b` | Local answer generation through Ollama | Practical for development, not a legal-quality benchmark |
+| `qwen3.5:4b` | Default local answer generation through Ollama | Practical for development, not a legal-quality benchmark |
+| `qwen2.5:1.5b-instruct` | Faster lighter generation, used in evaluation scripts | Lower quality, faster |
 
 Other useful settings:
 
@@ -254,57 +264,71 @@ Use `./scripts/index` when documents, embedding model, or chunking settings chan
 Existing unchanged documents are skipped using Neo4j metadata: source path, file
 timestamp, embedding model, chunking version, and word limit.
 
-The current chunking version is `word-block-v11`. If this value changes in code,
-the next `./scripts/index` run rebuilds affected documents.
+The current chunking version is `word-block-v14-boundary-triples`. If this value changes
+in code (`CHUNKING_VERSION` in `backend/config.py`), the next `./scripts/index` run
+rebuilds affected documents.
 
 ## Retrieval Strategies
 
 The `/ask` endpoint accepts an optional strategy in the JSON body:
 
 ```json
-{"question": "개인정보의 수집ㆍ이용에 관한 조문은 몇 조인가요?", "strategy": "hybrid"}
+{"question": "개인정보의 수집ㆍ이용에 관한 조문은 몇 조인가요?", "strategy": "graph"}
 ```
 
 Available strategies:
 
 - `vector`: return only the top vector-search chunks.
-- `hybrid`: GraphRAG mode. Start from vector hits, add nearby chunk parts, add
+- `graph`: GraphRAG mode. Start from vector hits, add nearby chunk parts, add
   graph facts from extracted concepts and relationships, and expand through
   `LegalUnit` nodes only when the question explicitly asks for article or
   section-level context.
+- `neuro_symbolic`: Neuro-Symbolic mode. Start with GraphRAG evidence, then add
+  an explicit symbolic reasoning trace that lists matched concepts, checked
+  definitions, legal relations, exceptions, conditions, supporting chunks, and
+  graph paths.
 
-The browser app labels these modes as `Vector` and `GraphRAG`.
+The browser app labels these modes as `Vector`, `GraphRAG`, and
+`Neuro-Symbolic`.
 
 ## Current Scope
 
 - Korean HWPX ingestion
 - Neo4j vector storage and cosine retrieval
 - Deterministic Neo4j legal-structure graph:
-  `Document -> LegalUnit -> Chunk`
+  `Document -> LegalUnit -[:SUPPORTED_BY]-> SourceChunk`
 - Deterministic legal definition graph:
-  `Term -> Definition -> LegalUnit`, with chunk-level source evidence
+  `Term -> Definition -> LegalUnit`, with `SUPPORTED_BY` source evidence
 - Kiwi-assisted legal relationship graph:
   `Concept -[:HAS_DUTY|MAY|PROHIBITS|MUST_NOTIFY|MAY_REQUEST]-> Concept`
-- Deterministic legal connection graph:
-  `Concept -[:CITES|EXCEPTION_TO]-> Concept`
+- Legal connection graph:
+  `Chunk -[:CITES]-> Citation -[:REFERS_TO]-> Document` and
+  `Chunk -[:CITES]-> Citation -[:REFERS_TO_ARTICLE]-> LegalUnit`
+- Exception edges between concepts: `Concept -[:EXCEPTION_TO]-> Concept`
+- Neuro-symbolic trace categorizes retrieved evidence into definitions,
+  obligations, prohibitions, permissions, exceptions, and conditions
+  at query time without separate graph node labels
 - Local embeddings through `sentence-transformers`
 - Local answer generation through Ollama
-- Swappable retrieval strategies: `vector` and GraphRAG-backed `hybrid`
+- Swappable retrieval strategies: `vector`, GraphRAG-backed `graph`, and
+  trace-backed `neuro_symbolic`
 
-## Cleanup Decisions
+## Architecture Decisions
 
-This project uses the assignment's Option B: a standalone Neo4j GraphRAG
-prototype. Haystack was removed because the current code only used three helper
-types from it, not Haystack pipelines, components, or document stores. Removing
-it keeps the code and dependencies smaller while preserving the required
-baseline vector RAG query path.
-
-PDF and browser upload support were also removed for now. The current MVP
-corpus is HWPX and plain TXT legal text, and filesystem-based document
-management is simpler for sensitive on-premise legal documents. PDF/OCR can be
-added later after the HWPX/TXT pipeline and GraphRAG comparison are stable.
-
-Next major step: evaluate `vector` and GraphRAG-backed `hybrid` retrieval with
-context precision, answer quality, and relationship-reasoning questions. The
-current GraphRAG path already adds Kiwi-assisted legal triples, citations, and
-exception links as graph facts before generation.
+- **Standalone Neo4j GraphRAG** — Haystack was removed because only three
+  helper types were used from it, not pipelines or document stores.
+- **Deterministic graph construction** — Legal-unit, definition, case, and
+  citation nodes are built from text structure patterns and regex, not from
+  an LLM.
+- **Neuro-symbolic traces** — The `neuro_symbolic` retrieval strategy adds a
+  symbolic reasoning trace (definitions checked, relations found, conclusion
+  type) as prompt context for the LLM.
+- **Retrieval strategies** — `vector`, `graph` (GraphRAG), and
+  `neuro_symbolic` are swappable via the `/ask` endpoint.
+- **PDF extraction** — `pypdfium2` is the primary engine; `pdfplumber`
+  serves as a fallback when pdfium output is short, has replacement
+  characters, or misses table-heavy text and Hanja.
+- **No browser upload** — Filesystem-based document management is simpler
+  for sensitive on-premise legal use.
+- **Evaluation** — The `evaluation/` module benchmarks retrieval precision
+  and answer quality across strategies.

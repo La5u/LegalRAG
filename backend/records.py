@@ -9,19 +9,6 @@ CHUNK_FIELDS = (
     "group_id",
     "part",
     "source_path",
-    "legal_unit_id",
-    "chapter_id",
-    "chapter_number",
-    "chapter_title",
-    "chapter_order",
-    "section_id",
-    "section_number",
-    "section_title",
-    "section_order",
-    "article_id",
-    "article_number",
-    "article_title",
-    "article_order",
 )
 
 
@@ -36,13 +23,35 @@ def chunk_return_fields(alias: str, score: str, rank: str | None = None) -> str:
     return ",\n                ".join(fields)
 
 
+def chunk_meta(**overrides) -> dict:
+    meta = {
+        field: None
+        for field in CHUNK_FIELDS
+        if field != "content"
+    }
+    meta.update(overrides)
+    return meta
+
+
 def document_from_record(record) -> Document:
+    record_keys = set(record.keys())
+    missing_fields = [
+        field
+        for field in ("content", *CHUNK_FIELDS)
+        if field not in record_keys
+    ]
+    if missing_fields:
+        raise KeyError(
+            f"Neo4j record is missing required fields: {', '.join(missing_fields)}"
+        )
     return Document(
         content=record["content"],
-        meta={
-            field: record[field]
-            for field in CHUNK_FIELDS
-            if field != "content"
-        },
+        meta=chunk_meta(
+            **{
+                field: record[field]
+                for field in CHUNK_FIELDS
+                if field != "content"
+            }
+        ),
         score=record.get("score"),
     )

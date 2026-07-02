@@ -2,3 +2,9 @@
 .venv/
 __pycache__/
 *.py[cod]
+.env
+.env.*
+evaluation/*results*.jsonl
+evaluation/*report*.json
+evaluation/generated_candidates.jsonl
+evaluation/*.before_*.jsonl

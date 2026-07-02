@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+source "$PROJECT_ROOT/scripts/lib/runtime.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/eval [curated|codex] [retrieval|llm] [extra evaluator args...]
+
+Examples:
+  ./scripts/eval curated retrieval
+  ./scripts/eval codex retrieval --max-questions 20
+  ./scripts/eval curated llm --strategies graph
+
+Environment overrides:
+  QUESTIONS=/path/questions.jsonl RESULTS=/path/results.jsonl ./scripts/eval curated retrieval
+USAGE
+}
+
+QUESTION_SET="${1:-curated}"
+RUN_MODE="${2:-retrieval}"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$QUESTION_SET" in
+  curated)
+    DEFAULT_QUESTIONS="evaluation/questions.jsonl"
+    ;;
+  codex)
+    DEFAULT_QUESTIONS="evaluation/codex_candidates.jsonl"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+case "$RUN_MODE" in
+  retrieval)
+    RETRIEVAL_ONLY=(--retrieval-only)
+    DEFAULT_RESULT_SUFFIX="retrieval"
+    ;;
+  llm)
+    RETRIEVAL_ONLY=()
+    DEFAULT_RESULT_SUFFIX="llm"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p /tmp/legalrag-eval
+
+export LEGALRAG_EMBEDDING_MODEL="${LEGALRAG_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}"
+export LEGALRAG_GENERATION_MODEL="${LEGALRAG_GENERATION_MODEL:-qwen2.5:1.5b-instruct}"
+export LEGALRAG_JUDGE_MODEL="${LEGALRAG_JUDGE_MODEL:-qwen2.5:1.5b-instruct}"
+export LEGALRAG_CONTEXT_WINDOW="${LEGALRAG_CONTEXT_WINDOW:-2048}"
+export LEGALRAG_MAX_OUTPUT_TOKENS="${LEGALRAG_MAX_OUTPUT_TOKENS:-160}"
+export LEGALRAG_OLLAMA_KEEP_ALIVE="${LEGALRAG_OLLAMA_KEEP_ALIVE:-1m}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+
+PYTHON="$(resolve_python)"
+QUESTIONS="${QUESTIONS:-$DEFAULT_QUESTIONS}"
+RESULTS="${RESULTS:-/tmp/legalrag-eval/${LEGALRAG_EMBEDDING_MODEL##*/}_${QUESTION_SET}_${DEFAULT_RESULT_SUFFIX}.jsonl}"
+CONCURRENCY="${EVAL_CONCURRENCY:-1}"
+
+exec "$PYTHON" -m evaluation.evaluator \
+  --questions "$QUESTIONS" \
+  --results "$RESULTS" \
+  --strategies vector,graph,neuro_symbolic \
+  --concurrency "$CONCURRENCY" \
+  "${RETRIEVAL_ONLY[@]}" \
+  "$@"

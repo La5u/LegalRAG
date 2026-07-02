@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from backend.ingest import chunk_text, load_document
@@ -9,6 +10,12 @@ RAW_DOCUMENTS_PATH = DOCUMENTS_PATH / "raw"
 SUPPORTED_SUFFIXES = {".hwpx", ".pdf", ".txt"}
 
 
+def _normalized_stem(path: Path) -> str:
+    stem = path.stem
+    stem = re.sub(r"\([^)]*\)", "", stem).strip()
+    return stem.casefold()
+
+
 def get_document_paths() -> list[Path]:
     paths = [
         path
@@ -16,14 +23,14 @@ def get_document_paths() -> list[Path]:
         if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
     ]
     hwpx_stems = {
-        path.with_suffix("")
+        _normalized_stem(path)
         for path in paths
         if path.suffix.lower() == ".hwpx"
     }
     return sorted(
         path
         for path in paths
-        if path.suffix.lower() != ".pdf" or path.with_suffix("") not in hwpx_stems
+        if path.suffix.lower() != ".pdf" or _normalized_stem(path) not in hwpx_stems
     )
 
 

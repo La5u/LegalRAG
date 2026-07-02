@@ -26,7 +26,7 @@
 - Added a Neo4j constraint for `Concept.name`.
 - Added a Neo4j vector index for `Chunk.embedding`.
 - Added deterministic legal-structure graph storage:
-  `Document -CONTAINS-> LegalUnit -HAS_CHUNK-> Chunk`.
+  `Document -CONTAINS-> LegalUnit -SUPPORTED_BY-> Chunk`.
 - Added generic `LegalUnit.kind` values for chapter, section, article, clause,
   item, and sub-item structure.
 - Added direct concept relationship storage for legal triples and legal
@@ -49,8 +49,8 @@
 - Lazy-loaded the embedding model so app startup does not load models.
 - Kept unchanged-document skipping based on source path, file timestamp,
   embedding model, chunking version, and word limit.
-- Added `backend.evaluation` to run two questions per indexed HWPX document
-  against both Vector and GraphRAG modes and write a report table.
+- Added `evaluation.evaluator` for incremental JSONL evaluation across Vector,
+  GraphRAG, and Neuro-Symbolic modes.
 - Added source precision measurement with `context_precision` for each
   evaluation question.
 
@@ -77,7 +77,7 @@
 
 - Removed `haystack-ai`.
 - Removed `ollama-haystack`.
-- Removed `pdfplumber`.
+- Kept `pdfplumber` for table-heavy or weak PDF extraction fallback.
 - Removed `python-multipart`.
 - Added explicit `httpx`.
 - Added `kiwipiepy` for Korean morphological analysis during triple extraction.

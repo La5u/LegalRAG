@@ -5,12 +5,13 @@ services:
       - "7474:7474"
       - "7687:7687"
     environment:
-      NEO4J_AUTH: neo4j/legalrag-password
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-legalrag-password}
+      HEALTHCHECK_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-legalrag-password}
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "cypher-shell -u neo4j -p legalrag-password 'RETURN 1' || exit 1"
+          "cypher-shell -u neo4j -p \"$${HEALTHCHECK_NEO4J_PASSWORD}\" 'RETURN 1' || exit 1"
         ]
       interval: 5s
       timeout: 5s

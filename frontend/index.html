@@ -11,12 +11,28 @@
     select { padding: 10px; }
     button { padding: 10px 16px; }
     #answer { white-space: pre-wrap; margin: 30px 0; }
+    #trace-panel { display: none; margin: 18px 0; }
+    #trace { background: #f6f6f6; padding: 12px; overflow: auto; }
+    #graph-facts-panel { display: none; margin: 18px 0; }
+    #graph-facts { background: #f6f6f6; padding: 12px; }
     details { border-top: 1px solid #ccc; padding: 12px 0; }
-    summary { cursor: pointer; }
+    summary { cursor: pointer; list-style: none; }
+    summary::before { content: "▷"; color: #777; margin-right: 6px; }
+    details[open] > summary::before { content: "▽"; }
+    summary::-webkit-details-marker { display: none; }
     details p { line-height: 1.5; }
+    .document-source { border-top: 1px solid #ccc; }
+    .legal-unit-source { border-top: 0; margin-left: 18px; padding: 8px 0; }
+    .chunk-source { border-top: 0; margin-left: 18px; padding: 6px 0; }
+    .chunk-source.used-source { background: #fff8d8; padding-left: 8px; padding-right: 8px; }
+    .direct-source-list { margin-left: 18px; }
+    .graph-fact-document { border-top: 0; padding: 8px 0; }
+    .graph-fact-row { border-top: 0; margin-left: 18px; padding: 6px 0; }
     .citation { font-size: 0.75em; vertical-align: super; line-height: 0; }
     .citation a { text-decoration: none; }
     .citation a:hover { text-decoration: underline; }
+    .trace-citation a { text-decoration: none; }
+    .trace-citation a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -24,85 +40,278 @@
   <form id="chat">
     <input id="question" placeholder="Ask about your documents" required>
     <select id="strategy" aria-label="Retrieval strategy">
-      <option value="hybrid">GraphRAG</option>
+      <option value="neuro_symbolic">Neuro-Symbolic</option>
+      <option value="graph">GraphRAG</option>
       <option value="vector">Vector</option>
+    </select>
+    <select id="category" aria-label="Document category">
+      <option value="auto">Auto</option>
+      <option value="statute">Statutes</option>
+      <option value="regulation">Regulations</option>
+      <option value="precedent">Precedents</option>
+      <option value="constitutional_decision">Constitutional</option>
+      <option value="contract">Contracts</option>
+      <option value="guidance">Guidance</option>
+      <option value="qna">Q&A</option>
     </select>
     <button>Ask</button>
   </form>
   <div id="answer"></div>
+  <details id="trace-panel">
+    <summary>Reasoning Trace</summary>
+    <div id="trace"></div>
+  </details>
+  <details id="graph-facts-panel">
+    <summary>Graph Facts</summary>
+    <div id="graph-facts"></div>
+  </details>
   <div id="sources"></div>
 
   <script>
     const form = document.querySelector("#chat");
     const question = document.querySelector("#question");
     const strategy = document.querySelector("#strategy");
+    const category = document.querySelector("#category");
     const answer = document.querySelector("#answer");
+    const tracePanel = document.querySelector("#trace-panel");
+    const trace = document.querySelector("#trace");
+    const graphFactsPanel = document.querySelector("#graph-facts-panel");
+    const graphFacts = document.querySelector("#graph-facts");
     const sources = document.querySelector("#sources");
+    let activeController = null;
+    let activeRequestId = 0;
+    let activeDotAnimation = null;
 
-    function renderAnswer(answerText) {
-      answer.replaceChildren();
-      const citationPattern = /\[(\d+)\]/g;
+    function openCitationTarget(target) {
+      let current = target;
+      while (current) {
+        if (current.tagName === "DETAILS") current.open = true;
+        current = current.parentElement;
+      }
+      target.scrollIntoView({behavior: "smooth", block: "start"});
+    }
+
+    function appendCitationLink(parent, chunkNumber, superscript = true) {
+      const wrapper = superscript
+        ? document.createElement("sup")
+        : document.createElement("span");
+      const link = document.createElement("a");
+      wrapper.className = superscript ? "citation" : "trace-citation";
+      link.href = `#source-${chunkNumber}`;
+      link.textContent = `[${chunkNumber}]`;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        const target = document.querySelector(link.hash);
+        if (target) openCitationTarget(target);
+      });
+      wrapper.append(link);
+      parent.append(wrapper);
+    }
+
+    function appendFormattedText(parent, text) {
+      const inlinePattern = /\[(\d+)\]|\*\*([^*]+)\*\*/g;
       let previousEnd = 0;
 
-      for (const match of answerText.matchAll(citationPattern)) {
-        answer.append(document.createTextNode(answerText.slice(previousEnd, match.index)));
+      for (const match of text.matchAll(inlinePattern)) {
+        parent.append(document.createTextNode(text.slice(previousEnd, match.index)));
 
-        const citation = document.createElement("sup");
-        const link = document.createElement("a");
-        const chunkNumber = match[1];
-        citation.className = "citation";
-        link.href = `#source-${chunkNumber}`;
-        link.textContent = `[${chunkNumber}]`;
-        link.addEventListener("click", (event) => {
-          event.preventDefault();
-          document.querySelector(link.hash)?.toggleAttribute("open");
-        });
-        citation.append(link);
-        answer.append(citation);
+        if (match[1]) {
+          appendCitationLink(parent, match[1]);
+        } else {
+          const strong = document.createElement("strong");
+          strong.textContent = match[2];
+          parent.append(strong);
+        }
         previousEnd = match.index + match[0].length;
       }
 
-      answer.append(document.createTextNode(answerText.slice(previousEnd)));
+      parent.append(document.createTextNode(text.slice(previousEnd)));
+    }
+
+    function renderAnswer(answerText) {
+      answer.replaceChildren();
+      appendFormattedText(answer, answerText);
+      highlightAnswerSources(answerText);
+    }
+
+    function highlightAnswerSources(answerText) {
+      const citedNumbers = [...answerText.matchAll(/\[(\d+)\]/g)]
+        .map((match) => match[1]);
+      for (const citation of citedNumbers) {
+        document.querySelector(`#source-${citation}`)?.classList.add("used-source");
+      }
+    }
+
+    function renderTrace(traceData) {
+      trace.replaceChildren();
+      for (const line of traceData.summary || []) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = line;
+        trace.append(paragraph);
+      }
+
+      const citations = (traceData.important_evidence || [])
+        .map((item) => item.citation)
+        .filter(Boolean)
+        .filter((citation, index, all) => all.indexOf(citation) === index);
+      if (citations.length) {
+        const evidence = document.createElement("p");
+        evidence.append("Evidence: ");
+        for (const citation of citations) {
+          appendCitationLink(evidence, citation, false);
+          evidence.append(" ");
+        }
+        trace.append(evidence);
+      }
+      tracePanel.style.display = "block";
+    }
+
+    function renderGraphFacts(facts) {
+      graphFacts.replaceChildren();
+      const groups = new Map();
+      for (const fact of facts) {
+        if (!groups.has(fact.document)) groups.set(fact.document, []);
+        groups.get(fact.document).push(fact);
+      }
+
+      for (const [documentName, documentFacts] of groups) {
+        const documentDetails = document.createElement("details");
+        const documentSummary = document.createElement("summary");
+        const filename = document.createElement("strong");
+        documentDetails.className = "graph-fact-document";
+        documentDetails.open = true;
+        filename.textContent = documentName;
+        documentSummary.append(filename);
+        documentDetails.append(documentSummary);
+
+        for (const fact of documentFacts) {
+          const factDetails = document.createElement("details");
+          const factSummary = document.createElement("summary");
+          const sentence = document.createElement("p");
+          factDetails.className = "graph-fact-row";
+          factDetails.open = true;
+          factSummary.textContent = fact.path || fact.relation || "Graph fact";
+          sentence.textContent = fact.sentence || fact.path;
+          factDetails.append(factSummary, sentence);
+          documentDetails.append(factDetails);
+        }
+
+        graphFacts.append(documentDetails);
+      }
+      graphFactsPanel.style.display = facts.length ? "block" : "none";
     }
 
     function renderSources(sourceList) {
+      const groups = new Map();
       for (const source of sourceList) {
+        if (!groups.has(source.document)) groups.set(source.document, []);
+        groups.get(source.document).push(source);
+      }
+
+      for (const [documentName, documentSources] of groups) {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
-        const text = document.createElement("p");
-        details.id = `source-${source.citation}`;
-        const score = source.score === null
-          ? "context"
-          : source.score.toFixed(3);
         const filename = document.createElement("strong");
-        filename.textContent = source.document;
-        summary.append(
-          `${source.citation}. `,
-          filename,
-          ` | Chunk ${source.chunk} | Score: ${score}`
-        );
-        text.textContent = source.text;
-        details.append(summary, text);
+        const legalUnits = new Map();
+        const directSources = [];
+        details.className = "document-source";
+        details.open = true;
+        filename.textContent = documentName;
+        summary.append(filename);
+        details.append(summary);
+
+        for (const source of documentSources) {
+          if (!source.article) {
+            directSources.push(source);
+            continue;
+          }
+          const unitLabel = `${source.article}${source.article_title ? ` (${source.article_title})` : ""}`;
+          if (!legalUnits.has(unitLabel)) legalUnits.set(unitLabel, []);
+          legalUnits.get(unitLabel).push(source);
+        }
+
+        if (directSources.length) {
+          const directList = document.createElement("div");
+          directList.className = "direct-source-list";
+          appendSourceChunks(directList, directSources);
+          details.append(directList);
+        }
+
+        for (const [unitLabel, unitSources] of legalUnits) {
+          const unitDetails = document.createElement("details");
+          const unitSummary = document.createElement("summary");
+          unitDetails.className = "legal-unit-source";
+          unitDetails.open = true;
+          unitSummary.textContent = unitLabel;
+          unitDetails.append(unitSummary);
+          appendSourceChunks(unitDetails, unitSources);
+          details.append(unitDetails);
+        }
+
         sources.append(details);
       }
     }
 
+    function appendSourceChunks(parent, sourceList) {
+      for (const source of sourceList) {
+        const chunk = document.createElement("details");
+        const chunkSummary = document.createElement("summary");
+        const text = document.createElement("p");
+        const score = source.score === null
+          ? ""
+          : ` | Score: ${source.score.toFixed(3)}`;
+        chunk.className = "chunk-source";
+        chunk.id = `source-${source.citation}`;
+        chunkSummary.textContent = `${source.citation}. Chunk ${source.chunk}${score}`;
+        text.textContent = sourceDisplayText(source);
+        chunk.append(chunkSummary, text);
+        parent.append(chunk);
+      }
+    }
+
+    function escapeRegExp(text) {
+      return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function sourceDisplayText(source) {
+      if (!source.article) return source.text;
+      const article = escapeRegExp(source.article);
+      const title = source.article_title ? escapeRegExp(source.article_title) : "";
+      const headingPattern = title
+        ? new RegExp(`^${article}\\s*\\(${title}\\)\\s*`)
+        : new RegExp(`^${article}\\s*`);
+      return source.text.replace(headingPattern, "").trim() || source.text;
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (activeController) activeController.abort();
+      if (activeDotAnimation) clearInterval(activeDotAnimation);
+      const requestId = activeRequestId + 1;
+      activeRequestId = requestId;
+      activeController = new AbortController();
       let dotCount = 1;
       answer.textContent = "Thinking.";
+      tracePanel.style.display = "none";
+      trace.textContent = "";
+      graphFactsPanel.style.display = "none";
+      graphFacts.replaceChildren();
       const dotAnimation = setInterval(() => {
+        if (requestId !== activeRequestId) return;
         dotCount = dotCount === 3 ? 1 : dotCount + 1;
         answer.textContent = `Thinking${".".repeat(dotCount)}`;
       }, 500);
+      activeDotAnimation = dotAnimation;
       sources.replaceChildren();
 
       try {
         const response = await fetch("/ask", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({question: question.value, strategy: strategy.value})
+          body: JSON.stringify({question: question.value, strategy: strategy.value, category: category.value}),
+          signal: activeController.signal
         });
+        if (requestId !== activeRequestId) return;
         if (!response.ok) throw new Error("Request failed");
 
         const reader = response.body.getReader();
@@ -117,6 +326,7 @@
           buffer = lines.pop();
 
           for (const line of lines) {
+            if (requestId !== activeRequestId) return;
             if (!line) continue;
             let message;
             try {
@@ -126,26 +336,39 @@
             }
             if (message.type === "sources") {
               renderSources(message.sources);
+            } else if (message.type === "graph_facts") {
+              renderGraphFacts(message.graph_facts);
+            } else if (message.type === "trace") {
+              renderTrace(message.trace);
             } else if (message.type === "token") {
               clearInterval(dotAnimation);
               answerText += message.text;
               answer.textContent = answerText;
             } else if (message.type === "error") {
-              throw new Error("Generation failed");
+              clearInterval(dotAnimation);
+              answer.textContent = message.message || "Generation failed. Review the trace and cited sources.";
+              return;
             }
           }
 
           if (done) break;
         }
 
+        if (requestId !== activeRequestId) return;
         if (!answerText.trim()) {
-          throw new Error("Generation returned no visible answer");
+          answer.textContent = "No generated answer was returned. Review the trace and cited sources.";
+          return;
         }
         renderAnswer(answerText);
-      } catch {
+      } catch (error) {
+        if (error.name === "AbortError" || requestId !== activeRequestId) return;
         answer.textContent = "The request failed. Check Neo4j, Ollama, and the server logs.";
       } finally {
-        clearInterval(dotAnimation);
+        if (requestId === activeRequestId) {
+          clearInterval(dotAnimation);
+          activeDotAnimation = null;
+          activeController = null;
+        }
       }
     });
   </script>

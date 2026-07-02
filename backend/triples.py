@@ -14,6 +14,7 @@ LEGAL_RELATION_PATTERNS = [
     ("MAY", re.compile(r"할 수 있다")),
 ]
 LEGAL_RELATIONS = [relation for relation, _pattern in LEGAL_RELATION_PATTERNS]
+CONCEPT_RELATION_TYPES = LEGAL_RELATIONS + ["EXCEPTION_TO"]
 SUBJECT_PARTICLES = {"은", "는", "이", "가", "께서는"}
 RECIPIENT_PARTICLES = {"에게", "께", "한테", "에"}
 OBJECT_PARTICLES = {"을", "를"}
@@ -74,6 +75,7 @@ def pick_object(phrases: list[dict], relation: str) -> str | None:
         for phrase in reversed(phrases):
             if phrase["particle"] in RECIPIENT_PARTICLES:
                 return phrase["text"]
+        return None
 
     for phrase in reversed(phrases):
         if phrase["particle"] in OBJECT_PARTICLES:
@@ -93,9 +95,10 @@ def extract_triples(chunks: list[Document]) -> list[dict]:
                 if not match:
                     continue
 
-                phrases = noun_phrases(sentence[:match.start()])
-                subject = pick_subject(phrases)
-                object_ = pick_object(phrases, relation)
+                before_phrases = noun_phrases(sentence[:match.start()])
+                all_phrases = noun_phrases(sentence)
+                subject = pick_subject(before_phrases) or pick_subject(all_phrases)
+                object_ = pick_object(all_phrases, relation)
                 if not subject or not object_ or subject == object_:
                     continue
 
@@ -114,6 +117,7 @@ def extract_triples(chunks: list[Document]) -> list[dict]:
                         "subject": subject,
                         "object": object_,
                         "relation": relation,
+                        "relation_phrase": match.group(0),
                         "sentence": sentence,
                         "source_path": chunk.meta["source_path"],
                         "document_name": chunk.meta["document_name"],
