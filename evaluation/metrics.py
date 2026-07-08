@@ -1,7 +1,8 @@
 import re
 
 from backend.constants import CIRCLED_CLAUSE_MARKS, CITATION_PATTERN
-from backend.ingest import Document
+from backend.document import Document
+from backend.sources import normalize_source_text
 
 
 CIRCLED_CLAUSES = {
@@ -23,11 +24,7 @@ def normalize_citation(citation: str) -> str:
 
 
 def normalize_source_name(source: str) -> str:
-    normalized = normalize_metric_text(source)
-    normalized = re.sub(r"^(?:documents/raw/)?", "", normalized)
-    normalized = re.sub(r"\.(?:pdf|hwpx|hwp|txt)$", "", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"[\[\]★]", "", normalized)
-    return normalized
+    return normalize_metric_text(normalize_source_text(source))
 
 
 def is_article_only(citation: str) -> bool:
