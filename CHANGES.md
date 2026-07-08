@@ -44,7 +44,7 @@
 ## Indexing And Speed
 
 - Added `backend/index.py` for explicit indexing.
-- Added `scripts/index` for explicit Linux/macOS indexing.
+- Added `scripts/index` for explicit Linux indexing.
 - Removed startup indexing from FastAPI.
 - Lazy-loaded the embedding model so app startup does not load models.
 - Kept unchanged-document skipping based on source path, file timestamp,
@@ -91,10 +91,9 @@
 
 ## Developer Scripts
 
-- Added `scripts/dev` for Linux/macOS local startup.
+- Added `scripts/dev` for Linux local startup.
 - Added `scripts/run` as the one-command path: index changed documents, start
   Ollama if needed, and launch the app.
-- Removed Windows PowerShell helper scripts to keep the prototype lean.
 - Added customizable `backend.smoke` checks with `--compile-only`,
   `--skip-write`, and `--skip-lookups`.
 - Changed Neo4j readiness checks to use Bolt connectivity instead of the Neo4j

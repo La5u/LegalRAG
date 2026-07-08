@@ -1,8 +1,8 @@
 # LegalRAG
 
-A local Korean-first legal RAG prototype. It ingests Korean law HWPX, PDF, and
-TXT files, stores chunks and embeddings in Neo4j, retrieves with vector search,
-and generates cited answers through a local Ollama model.
+A Linux-only Korean-first legal RAG prototype. It ingests Korean law HWPX, PDF,
+and TXT files, stores chunks and embeddings in Neo4j, retrieves with vector
+search, and generates cited answers through a local Ollama or vLLM model.
 
 > Technical prototype only. Do not treat generated answers as legal advice.
 
@@ -24,6 +24,7 @@ local LLM answer with citations
 
 ## Requirements
 
+- Linux
 - Python 3.11 or newer
 - Docker with Compose
 - Neo4j 5.26 Community
@@ -45,27 +46,10 @@ password: legalrag-password
 
 ## Setup
 
-Linux or macOS:
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-```
-
-Windows PowerShell:
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-```
-
-If PowerShell blocks virtualenv activation, run this in the same terminal and
-then activate again:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 Download local models once:
@@ -112,7 +96,7 @@ startup.
 Run the local smoke checks after code changes:
 
 ```bash
-LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m backend.smoke
+LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m scripts.smoke
 ```
 
 Common evaluation runs:
@@ -123,20 +107,45 @@ Common evaluation runs:
 python -m evaluation.report --results /tmp/legalrag-eval/multilingual-e5-small_curated_retrieval.jsonl
 ```
 
+## Docker Hosting Workflow
+
+Docker is the deployment path, not the editing workflow. Keep working in this
+repository locally, test changes, commit them, then rebuild and restart the
+container on the server.
+
+Typical local development:
+
+```bash
+./scripts/dev
+```
+
+Typical server update:
+
+```bash
+git pull
+sudo docker compose build app
+sudo docker compose up -d
+```
+
+The running website uses the code copied into the Docker image at build time.
+Local edits do not appear on the website until the server rebuilds the image
+and restarts the app container. Neo4j data stays in the Docker volume, so
+replacing the app container does not delete the indexed database.
+
 ## How To Test
 
 Quick backend smoke test:
 
 ```bash
-LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m backend.smoke
+LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m scripts.smoke
 ```
 
 Faster variants:
 
 ```bash
-python -m backend.smoke --compile-only
-python -m backend.smoke --skip-write
-python -m backend.smoke --skip-lookups
+python -m scripts.smoke --compile-only
+python -m scripts.smoke --skip-write
+python -m scripts.smoke --skip-lookups
 ```
 
 Expected output:
@@ -169,6 +178,20 @@ docker compose up -d neo4j
 ollama serve
 source .venv/bin/activate
 python -m uvicorn backend.web:app --host 127.0.0.1 --port 8000
+```
+
+vLLM startup:
+
+```bash
+python -m vllm.entrypoints.openai.api_server \
+  --model Qwen/Qwen3-32B \
+  --host 127.0.0.1 \
+  --port 8001
+
+LEGALRAG_LLM_PROVIDER=vllm \
+LEGALRAG_GENERATION_MODEL=Qwen/Qwen3-32B \
+LEGALRAG_VLLM_URL=http://127.0.0.1:8001 \
+./scripts/dev
 ```
 
 ## Configuration
@@ -212,7 +235,9 @@ Other useful settings:
 
 ```bash
 export LEGALRAG_GENERATION_MODEL="qwen3.5:4b"
+export LEGALRAG_LLM_PROVIDER="ollama"
 export LEGALRAG_OLLAMA_THINK="false"
+export LEGALRAG_VLLM_URL="http://127.0.0.1:8001"
 export LEGALRAG_NEO4J_URI="bolt://127.0.0.1:7687"
 export LEGALRAG_NEO4J_USER="neo4j"
 export LEGALRAG_NEO4J_PASSWORD="legalrag-password"
