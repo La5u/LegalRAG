@@ -19,7 +19,7 @@ from backend.config import (
     RETRIEVAL_STRATEGIES,
     normalize_retrieval_strategy,
 )
-from backend.ingest import Document
+from backend.document import Document
 from backend.llm import stream_payload
 from evaluation.metrics import (
     CITATION_PATTERN,

@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from backend.ingest import (
-    chunk_text,
+from backend.chunker import chunk_text
+from backend.loaders import (
     extract_pdf_with_pdfium,
     extract_pdfplumber_parts,
     load_hwpx,

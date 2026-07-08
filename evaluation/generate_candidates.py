@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.document_types import document_type_from_source_path
-from backend.ingest import load_document
+from backend.loaders import load_document
 
 RAW_DIR = Path("documents/raw")
 OUTPUT_PATH = Path("evaluation/generated_candidates.jsonl")

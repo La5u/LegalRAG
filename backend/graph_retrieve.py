@@ -1,8 +1,13 @@
 import re
 from dataclasses import dataclass
 
-from backend.constants import CONCEPT_STOP_TERMS, QUERY_STOP_TERMS
-from backend.ingest import Document
+from backend.constants import (
+    CONCEPT_STOP_TERMS,
+    CONCEPT_STOP_TERMS_LIST,
+    GRAPH_FACT_ID_PREFIX,
+    QUERY_STOP_TERMS,
+)
+from backend.document import Document
 from backend.records import chunk_meta
 from backend.text import extract_tokens
 from backend.triples import CONCEPT_RELATION_TYPES, LEGAL_RELATIONS
@@ -76,7 +81,8 @@ def graph_facts(
             if chunk.meta.get("source_path")
         )
     )
-    terms = terms or query_terms(query)
+    if terms is None:
+        terms = query_terms(query)
     focus_article_numbers = list(
         dict.fromkeys(
             article_terms(query)
@@ -154,7 +160,7 @@ def _case_holding_facts(
     )
     return [
         GraphFact(
-            id=f"graph-fact::HAS_HOLDING::{record['chunk_id']}::{index}",
+            id=f"{GRAPH_FACT_ID_PREFIX}HAS_HOLDING::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
             chunk=f"graph-case-{index}",
@@ -227,7 +233,7 @@ def _graph_relation_facts(
         """,
         relations=CONCEPT_RELATION_TYPES,
         preferred_relations=preferred_relations(query),
-        concept_stop_terms=list(CONCEPT_STOP_TERMS),
+        concept_stop_terms=CONCEPT_STOP_TERMS_LIST,
         article_terms=article_terms(query),
         chunk_ids=chunk_ids,
         source_paths=list(dict.fromkeys(source_paths)),
@@ -237,7 +243,7 @@ def _graph_relation_facts(
     )
     return [
         GraphFact(
-            id=f"graph-fact::{record['relation']}::{record['chunk_id']}::{index}",
+            id=f"{GRAPH_FACT_ID_PREFIX}{record['relation']}::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
             chunk=f"graph-{index}",
@@ -272,15 +278,15 @@ def _graph_definition_facts(
 
     definition_records = run_read(
         """
-        MATCH (term:Term)-[:DEFINED_AS]->(definition:Definition)-[:SUPPORTED_BY]->(chunk:Chunk)
+        MATCH (term:Term)-[:DEFINED_AS]->(definition:Definition)
         OPTIONAL MATCH (definition)-[:DEFINED_IN]->(article:LegalUnit)
-        WITH term, definition, chunk, article
+        WITH term, definition, article
         WHERE (
-            ($source_paths <> [] AND chunk.source_path IN $source_paths)
+            ($source_paths <> [] AND definition.source_path IN $source_paths)
             OR (
                 $source_paths = []
                 AND (
-                    chunk.id IN $chunk_ids
+                    definition.chunk_id IN $chunk_ids
                     OR article.number IN $article_numbers
                     OR any(query_term IN $query_terms WHERE term.name CONTAINS query_term)
                 )
@@ -289,9 +295,9 @@ def _graph_definition_facts(
         RETURN
             term.name AS term,
             definition.text AS text,
-            chunk.document_name AS document_name,
-            chunk.source_path AS source_path,
-            chunk.id AS chunk_id,
+            definition.document_name AS document_name,
+            definition.source_path AS source_path,
+            definition.chunk_id AS chunk_id,
             definition.chunk_number AS chunk_number,
             article.id AS article_id,
             article.number AS article_number
@@ -305,7 +311,7 @@ def _graph_definition_facts(
     )
     return [
         GraphFact(
-            id=f"graph-fact::DEFINED_AS::{record['chunk_id']}::{index}",
+            id=f"{GRAPH_FACT_ID_PREFIX}DEFINED_AS::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
             chunk=f"graph-definition-{index}",
