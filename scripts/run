@@ -6,12 +6,12 @@ cd "$PROJECT_ROOT"
 
 source "$PROJECT_ROOT/scripts/lib/runtime.sh"
 source "$PROJECT_ROOT/scripts/lib/ollama.sh"
+source "$PROJECT_ROOT/scripts/lib/llm.sh"
 
 PYTHON="$(resolve_python)"
 OLLAMA_LOG="/tmp/legalrag-ollama.log"
 
 "$PROJECT_ROOT/scripts/index"
-ensure_ollama "$PYTHON" "$OLLAMA_LOG"
-wait_ollama_model "$PYTHON"
+ensure_llm "$PYTHON" "$OLLAMA_LOG"
 
 exec "$PYTHON" -m uvicorn backend.web:app --host 127.0.0.1 --port 8000

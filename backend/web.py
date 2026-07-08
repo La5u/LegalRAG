@@ -1,8 +1,10 @@
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -11,8 +13,10 @@ from pydantic import BaseModel, Field
 from backend.document_types import document_type_from_source_path
 from backend.rag import LegalRAG
 from backend.retrieval import RetrievalUnavailable
+from backend.routing import route_reason
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RAW_DOCUMENTS_PATH = PROJECT_ROOT / "documents" / "raw"
 
 CATEGORIES = [
     "all",
@@ -26,6 +30,47 @@ CATEGORIES = [
 ]
 
 
+def _normalized_document_stem(path: Path) -> str:
+    stem = re.sub(r"\([^)]*\)", "", path.stem).strip()
+    return stem.casefold()
+
+
+def _safe_raw_document_path(source_path: str) -> Path | None:
+    path = (PROJECT_ROOT / source_path).resolve()
+    try:
+        path.relative_to(RAW_DOCUMENTS_PATH)
+    except ValueError:
+        return None
+    return path
+
+
+def _matching_pdf_path(path: Path) -> Path | None:
+    if path.suffix.lower() == ".pdf" and path.exists():
+        return path
+
+    normalized_stem = _normalized_document_stem(path)
+    for candidate in path.parent.glob("*.pdf"):
+        if _normalized_document_stem(candidate) == normalized_stem:
+            return candidate
+    return None
+
+
+def document_pdf_url(source_path: str | None) -> str | None:
+    if not source_path:
+        return None
+
+    path = _safe_raw_document_path(source_path)
+    if path is None:
+        return None
+
+    pdf_path = _matching_pdf_path(path)
+    if pdf_path is None:
+        return None
+
+    relative_path = pdf_path.relative_to(RAW_DOCUMENTS_PATH).as_posix()
+    return f"/documents/raw/{quote(relative_path, safe='/')}"
+
+
 def graph_fact_rows(chunks) -> list[dict]:
     rows = []
     for chunk in chunks:
@@ -34,7 +79,11 @@ def graph_fact_rows(chunks) -> list[dict]:
     return rows
 
 
-def add_trace_citations(trace_payload: dict | None, sources: list[dict]) -> dict | None:
+def add_trace_citations(
+    trace_payload: dict | None,
+    sources: list[dict],
+    category: str,
+) -> dict | None:
     if not trace_payload:
         return None
 
@@ -50,15 +99,23 @@ def add_trace_citations(trace_payload: dict | None, sources: list[dict]) -> dict
         }
         for item in trace.get("important_evidence", [])
     ]
-    return compact_trace(trace)
+    return compact_trace(trace, category)
 
 
-def compact_trace(trace: dict) -> dict:
+def compact_trace(trace: dict, category: str) -> dict:
+    query_type = trace.get("query_type")
     return {
-        "query_type": trace.get("query_type"),
-        "summary": trace.get("summary", []),
-        "important_evidence": trace.get("important_evidence", []),
-        "conclusion": trace.get("conclusion", {}),
+        "query_type": query_type,
+        "category": category,
+        "route_reason": route_reason(query_type),
+        "important_evidence": [
+            {"citation": item.get("citation")}
+            for item in trace.get("important_evidence", [])
+            if item.get("citation")
+        ],
+        "conclusion": {
+            "answer_type": trace.get("conclusion", {}).get("answer_type"),
+        },
     }
 
 
@@ -97,6 +154,24 @@ def list_documents(rag_system: Annotated[LegalRAG, Depends(get_rag)]) -> dict:
     return {"documents": rag_system.list_documents()}
 
 
+@app.get("/documents/raw/{document_path:path}")
+def raw_document(document_path: str) -> FileResponse:
+    path = (RAW_DOCUMENTS_PATH / document_path).resolve()
+    try:
+        path.relative_to(RAW_DOCUMENTS_PATH)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail="Document not found.") from error
+
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
 @app.post("/ask")
 async def ask(
     request: Question,
@@ -123,10 +198,12 @@ async def ask(
             {
                 "document": chunk.meta.get("document_name", ""),
                 "raw_document": chunk.meta.get("document_name", ""),
+                "pdf_url": document_pdf_url(chunk.meta.get("source_path")),
                 "citation": citation_number,
                 "chunk": chunk.meta.get("chunk_number"),
                 "score": chunk.score,
                 "text": chunk.content,
+                "heading_path": chunk.meta.get("heading_path"),
                 "article": chunk.meta.get("article_number"),
                 "article_title": chunk.meta.get("article_title"),
                 "legal_unit_kind": chunk.meta.get("legal_unit_kind"),
@@ -137,7 +214,7 @@ async def ask(
             for citation_number, chunk in enumerate(source_chunks, start=1)
         ]
         graph_facts = graph_fact_rows(chunks)
-        trace_payload = add_trace_citations(trace_payload, sources)
+        trace_payload = add_trace_citations(trace_payload, sources, request.category)
         yield json.dumps({"type": "sources", "sources": sources}) + "\n"
         if graph_facts:
             yield json.dumps({"type": "graph_facts", "graph_facts": graph_facts}) + "\n"

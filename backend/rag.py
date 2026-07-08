@@ -8,35 +8,35 @@ from backend.config import (
     NEO4J_PASSWORD,
     NEO4J_URI,
     NEO4J_USER,
-    NEO4J_VECTOR_INDEX,
     TOP_K,
     configure_runtime_environment,
-    normalize_retrieval_strategy,
+)
+from backend.graph_index import (
+    delete_source_paths,
+    relink_citation_targets,
+    write_index_transaction,
 )
 from backend.indexing import (
-    delete_source_paths,
     document_is_current,
     index_document,
     prune_missing_documents,
-    write_index_transaction,
 )
-from backend.ingest import Document
+from backend.document import Document
 from backend.llm import stream_answer
 from backend.reasoning import prioritize_symbolic_evidence, symbolic_prompt
-from backend.retrieval import attach_symbolic_trace, filter_by_category, retrieve_graphrag, retrieve_vectorrag
-from backend.schema import setup_schema, setup_vector_index
+from backend.retrieval import filter_by_category, retrieve_chunks
+from backend.schema import setup_schema
 from backend.sources import SourceMatcher
 
 
 logger = logging.getLogger(__name__)
 
 
-def _compact_chunk(chunk: Document) -> str:
-    content = chunk.content
-    document_name = chunk.meta.get("document_name", "")
-    if document_name and content.startswith(document_name):
-        content = content[len(document_name):].lstrip("\n")
-    return content
+def chunk_context(chunk: Document) -> str:
+    heading = chunk.meta.get("heading_path")
+    if heading:
+        return f"{heading}\n{chunk.content}"
+    return chunk.content
 
 
 class LegalRAG:
@@ -115,6 +115,9 @@ class LegalRAG:
     def delete_document(self, source_path: str) -> None:
         delete_source_paths(self._run_write, [source_path])
 
+    def relink_citations(self) -> None:
+        relink_citation_targets(self._run_write)
+
     def index(
         self,
         chunks: list[Document],
@@ -122,15 +125,6 @@ class LegalRAG:
         source_mtime_ns: int,
     ) -> None:
         logger.info("Indexing %s with %s chunks.", source_path, len(chunks))
-        document_name = (
-            chunks[0].meta.get("document_name", source_path) if chunks else source_path
-        )
-        setup_vector_index(
-            self._run_write,
-            self._run_read,
-            NEO4J_VECTOR_INDEX,
-            self.embedding_dimensions,
-        )
 
         index_rows = index_document(
             self._run_write,
@@ -142,22 +136,11 @@ class LegalRAG:
             self.embedding_dimensions,
         )
 
-        logger.info(
-            "Prepared graph rows for %s: %s legal units, %s definitions, "
-            "%s triples, %s connections, %s holdings.",
-            source_path,
-            len(index_rows["legal_unit_rows"]),
-            len(index_rows["definition_rows"]),
-            len(index_rows["triple_rows"]),
-            len(index_rows["connection_rows"]),
-            len(index_rows["holding_rows"]),
-        )
-
         with self.driver.session(database=NEO4J_DATABASE) as session:
             session.execute_write(
                 write_index_transaction,
                 source_path,
-                document_name,
+                index_rows["document_name"],
                 source_mtime_ns,
                 index_rows["chunk_rows"],
                 index_rows["legal_unit_rows"],
@@ -188,22 +171,9 @@ class LegalRAG:
         ]
 
     def retrieve(self, query: str, strategy: str = "graph", category: str = "auto") -> list[Document]:
-        strategy = normalize_retrieval_strategy(strategy)
-        if strategy == "vector":
-            chunks = retrieve_vectorrag(self._run_read, self.embedding_model, self.top_k, query)
-        elif strategy == "graph":
-            chunks = retrieve_graphrag(
-                self._run_read, self.embedding_model, self.top_k, query, self._source_matcher
-            )
-        elif strategy == "neuro_symbolic":
-            chunks = attach_symbolic_trace(
-                query,
-                retrieve_graphrag(
-                    self._run_read, self.embedding_model, self.top_k, query, self._source_matcher
-                ),
-            )
-        else:
-            raise ValueError(f"Unknown retrieval strategy: {strategy}")
+        chunks = retrieve_chunks(
+            self._run_read, self.embedding_model, self.top_k, query, self._source_matcher, strategy
+        )
         resolved = category if category not in ("all", "auto") else None
         return filter_by_category(chunks, resolved)
 
@@ -223,7 +193,7 @@ class LegalRAG:
         )
         chunks = prioritize_symbolic_evidence(chunks, trace)
         context = "\n\n".join(
-            f"[{citation_number}]\n{_compact_chunk(chunk)}"
+            f"[{citation_number}]\n{chunk_context(chunk)}"
             for citation_number, chunk in enumerate(chunks, start=1)
         )
         await stream_answer(

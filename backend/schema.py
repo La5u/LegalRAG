@@ -69,11 +69,10 @@ def setup_vector_index(
     index_name: str,
     embedding_dimensions: int,
 ) -> None:
-    if not vector_index_matches_embedding_model(
-        run_read,
-        index_name,
-        embedding_dimensions,
-    ):
+    existing_dimensions = vector_index_dimensions(run_read, index_name)
+    if existing_dimensions == embedding_dimensions:
+        return
+    if existing_dimensions is not None:
         run_write(f"DROP INDEX {index_name} IF EXISTS")
     run_write(
         f"""
@@ -90,11 +89,10 @@ def setup_vector_index(
     )
 
 
-def vector_index_matches_embedding_model(
+def vector_index_dimensions(
     run_read,
     index_name: str,
-    embedding_dimensions: int,
-) -> bool:
+) -> int | None:
     records = run_read(
         """
         SHOW VECTOR INDEXES
@@ -105,10 +103,10 @@ def vector_index_matches_embedding_model(
         index_name=index_name,
     )
     if not records:
-        return False
+        return None
 
     index_config = records[0]["options"].get("indexConfig", {})
-    return index_config.get("vector.dimensions") == embedding_dimensions
+    return index_config.get("vector.dimensions")
 
 
 def vector_index_exists(run_read, index_name: str) -> bool:

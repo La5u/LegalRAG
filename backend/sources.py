@@ -141,6 +141,7 @@ def explicit_source_terms(query: str) -> list[str]:
 class SourceMatcher:
     def __init__(self, run_read):
         self._run_read = run_read
+        self._document_records = None
 
     def constraints(self, query: str) -> list[str]:
         aliases = [alias for alias in SOURCE_ALIASES if alias in query]
@@ -165,12 +166,7 @@ class SourceMatcher:
         )
         if not aliases and not source_terms and not case_terms and not allow_named_overlap:
             return []
-        records = self._run_read(
-            """
-            MATCH (document:Document)
-            RETURN document.source_path AS source_path, document.name AS name
-            """
-        )
+        records = self._documents()
         exact_matches = self._exact_source_matches(records, source_terms)
         alias_matches = self._alias_matches(records, aliases)
         case_content_matches = self._case_content_source_matches(case_terms)
@@ -181,6 +177,16 @@ class SourceMatcher:
         )
         matched = list(dict.fromkeys(exact_matches + alias_matches + case_content_matches + named_matches))
         return matched or []
+
+    def _documents(self) -> list:
+        if self._document_records is None:
+            self._document_records = self._run_read(
+                """
+                MATCH (document:Document)
+                RETURN document.source_path AS source_path, document.name AS name
+                """
+            )
+        return self._document_records
 
     def _alias_matches(self, records: list, aliases: list[str]) -> list[str]:
         if not aliases:

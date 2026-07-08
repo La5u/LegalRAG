@@ -1,9 +1,10 @@
-from backend.ingest import Document
+from backend.document import Document
 
 
 CHUNK_FIELDS = (
     "id",
     "content",
+    "heading_path",
     "chunk_number",
     "document_name",
     "group_id",

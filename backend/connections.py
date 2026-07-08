@@ -1,7 +1,7 @@
 import re
 
 from backend.constants import FULL_CITATION_PATTERN, LOCAL_CLAUSE_PATTERN
-from backend.ingest import Document
+from backend.document import Document
 from backend.text import split_sentences
 
 

@@ -1,10 +1,10 @@
 import re
 
-from backend.config import NEO4J_VECTOR_INDEX
-from backend.constants import CIRCLED_CLAUSE_MARKS, TOKEN_PATTERN
+from backend.config import NEO4J_VECTOR_INDEX, normalize_retrieval_strategy
+from backend.constants import CIRCLED_CLAUSE_MARKS, GRAPH_FACT_ID_PREFIX, TOKEN_PATTERN
+from backend.document import Document
 from backend.document_types import document_type_from_source_path
 from backend.graph_retrieve import GraphFact, graph_facts
-from backend.ingest import Document
 from backend.reasoning import build_symbolic_trace
 from backend.records import chunk_return_fields, document_from_record
 from backend.routing import QueryRoute, classify_query
@@ -404,7 +404,7 @@ def attach_legal_context(run_read, documents) -> list[Document]:
         document.meta["id"]
         for document in documents
         if document.meta.get("id")
-        and not str(document.meta.get("id")).startswith("graph-fact::")
+        and not str(document.meta.get("id")).startswith(GRAPH_FACT_ID_PREFIX)
     ]
     if not chunk_ids:
         return documents
@@ -571,7 +571,7 @@ def merge_ranked_expansion(retrieved_chunks, records) -> list[Document]:
 def attach_symbolic_trace(query, evidence) -> list[Document]:
     if not evidence:
         return evidence
-    trace_evidence = evidence + graph_fact_documents(evidence)
+    trace_evidence = evidence + graph_facts_from_meta(evidence)
     trace = build_symbolic_trace(query, trace_evidence)
     first_document = evidence[0]
     meta = dict(first_document.meta)
@@ -599,7 +599,7 @@ def attach_graph_facts(chunks, graph_facts_result: list[GraphFact], top_k) -> li
     return [Document(chunks[0].content, meta, chunks[0].score)] + chunks[1:]
 
 
-def graph_fact_documents(chunks: list[Document]) -> list[Document]:
+def graph_facts_from_meta(chunks: list[Document]) -> list[Document]:
     graph_fact_list = next(
         (chunk.meta.get("graph_facts") for chunk in chunks if chunk.meta.get("graph_facts")),
         [],
@@ -711,3 +711,25 @@ def retrieve_graphrag(run_read, embedding_model, top_k, query, source_matcher) -
     chunks = enrich_chunks(run_read, chunks, query, route, source_paths, is_summary)
     chunks = add_graph_facts(run_read, chunks, query, route, source_paths, is_summary, is_contract, top_k)
     return chunks
+
+
+def retrieve_chunks(
+    run_read, embedding_model, top_k, query, source_matcher, strategy="graph"
+) -> list[Document]:
+    """Run the retrieval pipeline selected by ``strategy``.
+
+    - ``vector``: exact-phrase + vector search only (no graph facts, no expansion).
+    - ``graph``: full GraphRAG pipeline (routing, source matching, expansion, graph facts).
+    - ``neuro_symbolic``: the full pipeline with a symbolic trace attached to the first chunk.
+    """
+    strategy = normalize_retrieval_strategy(strategy)
+    if strategy == "vector":
+        return retrieve_vectorrag(run_read, embedding_model, top_k, query)
+    if strategy == "graph":
+        return retrieve_graphrag(run_read, embedding_model, top_k, query, source_matcher)
+    if strategy == "neuro_symbolic":
+        return attach_symbolic_trace(
+            query,
+            retrieve_graphrag(run_read, embedding_model, top_k, query, source_matcher),
+        )
+    raise ValueError(f"Unknown retrieval strategy: {strategy}")

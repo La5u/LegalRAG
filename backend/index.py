@@ -1,7 +1,8 @@
 import re
 from pathlib import Path
 
-from backend.ingest import chunk_text, load_document
+from backend.chunker import chunk_text
+from backend.loaders import load_document
 from backend.rag import LegalRAG
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -70,6 +71,8 @@ def main() -> None:
                 continue
 
             print(f"indexed {document_path.name}: {len(chunks)} chunks")
+
+        rag.relink_citations()
 
     if failures:
         print("index completed with failures:")

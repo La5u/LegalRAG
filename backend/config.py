@@ -34,8 +34,10 @@ EMBEDDING_PROFILES = {
 EMBEDDING_PROFILE = EMBEDDING_PROFILES.get(EMBEDDING_MODEL, {})
 GENERATION_MODEL = os.getenv("LEGALRAG_GENERATION_MODEL", "qwen3.5:4b")
 JUDGE_MODEL = os.getenv("LEGALRAG_JUDGE_MODEL", "qwen2.5:1.5b-instruct")
+LLM_PROVIDER = os.getenv("LEGALRAG_LLM_PROVIDER", "ollama").lower()
 OLLAMA_URL = os.getenv("LEGALRAG_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_KEEP_ALIVE = os.getenv("LEGALRAG_OLLAMA_KEEP_ALIVE", "1m")
+VLLM_URL = os.getenv("LEGALRAG_VLLM_URL", "http://127.0.0.1:8001")
 
 NEO4J_URI = os.getenv("LEGALRAG_NEO4J_URI", "bolt://127.0.0.1:7687")
 NEO4J_USER = os.getenv("LEGALRAG_NEO4J_USER", "neo4j")
@@ -64,7 +66,7 @@ DEFAULT_MAX_WORDS = int(
     os.getenv("LEGALRAG_MAX_WORDS", EMBEDDING_PROFILE.get("max_words", "180"))
 )
 # Bump this whenever chunk text or indexed graph metadata changes.
-CHUNKING_VERSION = "word-block-v14-boundary-triples"
+CHUNKING_VERSION = "word-block-v18-structured-legal-body"
 
 if DEFAULT_MAX_WORDS <= 0:
     raise ValueError("LEGALRAG_MAX_WORDS must be greater than 0.")

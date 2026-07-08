@@ -4,7 +4,7 @@ import py_compile
 from time import perf_counter
 
 from backend.rag import LegalRAG
-from backend.ingest import Document
+from backend.document import Document
 from backend.config import NEO4J_VECTOR_INDEX
 from backend.graph_retrieve import graph_fact_documents
 from backend.records import document_from_record
@@ -170,6 +170,7 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
             MATCH (chunk:Chunk {source_path: $source_path, chunk_number: 2})
             RETURN chunk.id AS id,
                    chunk.content AS content,
+                   chunk.heading_path AS heading_path,
                    chunk.chunk_number AS chunk_number,
                    chunk.document_name AS document_name,
                    chunk.group_id AS group_id,
@@ -199,10 +200,8 @@ def assert_tree_write_and_cleanup(rag: LegalRAG) -> None:
             MATCH (term:Term {name: "테스트용어"})
                 -[:DEFINED_AS]->(definition:Definition)
                 -[:DEFINED_IN]->(:LegalUnit {kind: "article", number: "제2조"})
-            MATCH (definition)-[:SUPPORTED_BY]->(:Chunk {
-                source_path: $source_path,
-                chunk_number: 3
-            })
+            WHERE definition.source_path = $source_path
+                AND definition.chunk_number = 3
             RETURN term.name AS term
             """,
             source_path=TEMP_SOURCE_PATH,

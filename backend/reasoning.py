@@ -1,4 +1,4 @@
-from backend.ingest import Document
+from backend.document import Document
 from backend.routing import classify_query
 from backend.text import extract_tokens, strip_korean_particle
 

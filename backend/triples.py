@@ -1,8 +1,9 @@
 import re
 
-from kiwipiepy import Kiwi
-
-from backend.ingest import Document
+from backend.constants import CONCEPT_STOP_TERMS
+from backend.document import Document
+from backend.text import get_kiwi
+from backend.text import strip_korean_particle
 from backend.text import split_sentences
 
 
@@ -18,16 +19,7 @@ CONCEPT_RELATION_TYPES = LEGAL_RELATIONS + ["EXCEPTION_TO"]
 SUBJECT_PARTICLES = {"은", "는", "이", "가", "께서는"}
 RECIPIENT_PARTICLES = {"에게", "께", "한테", "에"}
 OBJECT_PARTICLES = {"을", "를"}
-
-
-_kiwi: Kiwi | None = None
-
-
-def get_kiwi() -> Kiwi:
-    global _kiwi
-    if _kiwi is None:
-        _kiwi = Kiwi()
-    return _kiwi
+GRAMMAR_NOUN_TAGS = {"NNB", "NR"}
 
 
 def noun_phrases(sentence: str) -> list[dict]:
@@ -45,22 +37,36 @@ def noun_phrases(sentence: str) -> list[dict]:
             continue
 
         forms = []
+        tags = []
         while index < len(tokens):
             tag = tokens[index].tag
             if not (tag.startswith("N") or tag in {"SL", "SN", "XSN"}):
                 break
             forms.append(tokens[index].form)
+            tags.append(tag)
             index += 1
 
         particle = None
         if index < len(tokens) and tokens[index].tag.startswith("J"):
             particle = tokens[index].form
 
-        phrase = "".join(forms).strip()
-        if phrase:
+        phrase = clean_concept_phrase("".join(forms))
+        if phrase and not is_grammar_phrase(phrase, tags):
             phrases.append({"text": phrase, "particle": particle})
 
     return phrases
+
+
+def clean_concept_phrase(phrase: str) -> str:
+    return strip_korean_particle(phrase.strip())
+
+
+def is_grammar_phrase(phrase: str, tags: list[str]) -> bool:
+    return bool(
+        not phrase
+        or phrase in CONCEPT_STOP_TERMS
+        or all(tag in GRAMMAR_NOUN_TAGS for tag in tags)
+    )
 
 
 def pick_subject(phrases: list[dict]) -> str | None:
@@ -121,12 +127,11 @@ def extract_triples(chunks: list[Document]) -> list[dict]:
                         "sentence": sentence,
                         "source_path": chunk.meta["source_path"],
                         "document_name": chunk.meta["document_name"],
-                        "chunk_id": chunk.meta["id"],
+                        "chunk_id": chunk.meta.get("id", ""),
                         "chunk_number": chunk.meta["chunk_number"],
                         "legal_unit_id": chunk.meta.get("legal_unit_id"),
                         "article_number": chunk.meta.get("article_number"),
                     }
                 )
-                break
 
     return triples

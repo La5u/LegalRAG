@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import re
 
-from backend.ingest import Document
+from backend.document import Document
 
 
 DEFINITION_PATTERN = re.compile(

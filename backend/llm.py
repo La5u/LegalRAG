@@ -6,11 +6,13 @@ import httpx
 from backend.config import (
     CONTEXT_WINDOW,
     GENERATION_MODEL,
+    LLM_PROVIDER,
     MAX_OUTPUT_TOKENS,
     OLLAMA_KEEP_ALIVE,
     OLLAMA_THINK,
     OLLAMA_URL,
     TEMPERATURE,
+    VLLM_URL,
 )
 
 
@@ -67,12 +69,41 @@ def payload(
     return request
 
 
+def vllm_payload(
+    query: str,
+    context: str,
+    symbolic_context: str | None = None,
+) -> dict:
+    return {
+        "model": GENERATION_MODEL,
+        "messages": messages(query, context, symbolic_context),
+        "stream": True,
+        "temperature": TEMPERATURE,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+    }
+
+
 async def stream_answer(
     query: str,
     context: str,
     callback,
     symbolic_context: str | None = None,
 ) -> None:
+    if LLM_PROVIDER == "vllm":
+        try:
+            await stream_vllm_payload(
+                vllm_payload(query, context, symbolic_context=symbolic_context),
+                callback,
+            )
+        except httpx.HTTPError as error:
+            logger.exception("vLLM request failed.")
+            await callback(f"\n[Generation error: {error}]\n")
+        return
+
+    if LLM_PROVIDER != "ollama":
+        await callback(f"\n[Generation error: unknown LLM provider {LLM_PROVIDER!r}]\n")
+        return
+
     try:
         await stream_payload(
             payload(query, context, include_think=True, symbolic_context=symbolic_context),
@@ -121,5 +152,35 @@ async def stream_payload(request: dict, callback) -> None:
                     continue
                 message = event.get("message", {})
                 token = message.get("content")
+                if token:
+                    await callback(token)
+
+
+async def stream_vllm_payload(request: dict, callback) -> None:
+    async with httpx.AsyncClient(timeout=600) as client:
+        async with client.stream(
+            "POST",
+            f"{VLLM_URL}/v1/chat/completions",
+            json=request,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+
+                data = line.removeprefix("data: ").strip()
+                if data == "[DONE]":
+                    break
+
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping non-JSON vLLM stream line: %r", line)
+                    continue
+
+                choices = event.get("choices", [])
+                if not choices:
+                    continue
+                token = choices[0].get("delta", {}).get("content")
                 if token:
                     await callback(token)

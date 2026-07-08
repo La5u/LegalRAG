@@ -1,20 +1,22 @@
 import re
 
+from backend.config import CHUNKING_VERSION, DEFAULT_MAX_WORDS, EMBEDDING_MODEL
 from backend.connections import CONNECTION_RELATIONS
-from backend.constants import CONCEPT_STOP_TERMS, QUERY_STOP_TERMS
+from backend.constants import CONCEPT_STOP_TERMS, QUERY_STOP_TERMS, STRUCTURE_KINDS
+from backend.document import Document
 from backend.document_types import (
     document_type_from_source_path,
     has_structural_legal_units,
     is_precedent_document,
 )
-from backend.ingest import Document, STRUCTURE_KINDS
 from backend.records import chunk_meta
+from backend.text import strip_korean_particle
 from backend.triples import CONCEPT_RELATION_TYPES, LEGAL_RELATIONS
 
 
 
 LEGAL_REFERENCE_CONCEPT_PATTERN = re.compile(
-    r"^제\d+(?:조(?:의\d+)?|항|호|목)$|^\d+(?:항|호|목)$|^[가-하]목$"
+    r"^제?\d+(?:조(?:의\d+)?|항|호|목)$|^\d+(?:항|호|목)$|^[가-하]목$|^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]$"
 )
 def build_legal_unit_rows(
     chunk: Document,
@@ -112,6 +114,11 @@ def build_case_rows(
 
 
 def is_holding_chunk(content: str) -> bool:
+    compact = " ".join(content.split())
+    if compact in {"【판시사항】", "【판결요지】", "【결정요지】"}:
+        return False
+    if re.fullmatch(r"[가-하]\.\s*.{1,24}", compact):
+        return False
     holding_terms = ("판시", "쟁점", "주문", "이유", "판결요지", "결정요지")
     return any(term in content for term in holding_terms)
 
@@ -216,6 +223,15 @@ def write_citation_nodes(run_write, rows: list[dict]) -> None:
                 row.law_name IS NOT NULL
                 AND target_document.name CONTAINS row.law_name
             )
+        WITH row, citation, target_document,
+            CASE
+                WHEN row.law_name IS NULL THEN 0
+                WHEN target_document.name STARTS WITH row.law_name + "(" THEN 0
+                WHEN target_document.name STARTS WITH row.law_name + " " THEN 1
+                WHEN target_document.document_type IN ["statute", "regulation"] THEN 2
+                ELSE 3
+            END AS target_priority
+        ORDER BY target_priority, target_document.name
         WITH row, citation, collect(target_document)[0] AS target_document
         FOREACH (_ IN CASE WHEN target_document IS NULL THEN [] ELSE [1] END |
             MERGE (citation)-[:REFERS_TO]->(target_document)
@@ -231,6 +247,49 @@ def write_citation_nodes(run_write, rows: list[dict]) -> None:
         )
         """,
         rows=rows,
+    )
+
+
+def relink_citation_targets(run_write) -> None:
+    run_write(
+        """
+        MATCH (citation:Citation)
+        OPTIONAL MATCH (citation)-[old_link:REFERS_TO|REFERS_TO_ARTICLE]->()
+        DELETE old_link
+        WITH DISTINCT citation
+        OPTIONAL MATCH (target_document:Document)
+        WHERE
+            (
+                citation.law_name IS NULL
+                AND target_document.source_path = citation.source_path
+            )
+            OR (
+                citation.law_name IS NOT NULL
+                AND target_document.name CONTAINS citation.law_name
+            )
+        WITH citation, target_document,
+            CASE
+                WHEN citation.law_name IS NULL THEN 0
+                WHEN target_document.name STARTS WITH citation.law_name + "(" THEN 0
+                WHEN target_document.name STARTS WITH citation.law_name + " " THEN 1
+                WHEN target_document.document_type IN ["statute", "regulation"] THEN 2
+                ELSE 3
+            END AS target_priority
+        ORDER BY citation.id, target_priority, target_document.name
+        WITH citation, collect(target_document)[0] AS target_document
+        FOREACH (_ IN CASE WHEN target_document IS NULL THEN [] ELSE [1] END |
+            MERGE (citation)-[:REFERS_TO]->(target_document)
+        )
+        WITH citation, target_document
+        OPTIONAL MATCH (target_article:LegalUnit {
+            source_path: target_document.source_path,
+            kind: "article",
+            number: citation.article
+        })
+        FOREACH (_ IN CASE WHEN target_article IS NULL THEN [] ELSE [1] END |
+            MERGE (citation)-[:REFERS_TO_ARTICLE]->(target_article)
+        )
+        """
     )
 
 
@@ -289,7 +348,7 @@ def clean_relation_rows(
 def clean_concept_name(value: str | None) -> str:
     if not value:
         return ""
-    value = value.strip()
+    value = strip_korean_particle(value.strip())
     if value.startswith("n") and len(value) > 1 and "가" <= value[1] <= "힣":
         value = value[1:]
     return value
@@ -306,3 +365,209 @@ def is_noisy_concept(value: str | None) -> bool:
 
 def is_legal_reference_concept(value: str | None) -> bool:
     return bool(value and LEGAL_REFERENCE_CONCEPT_PATTERN.fullmatch(value))
+
+
+def delete_source_paths(run_write, source_paths: list[str]) -> None:
+    if not source_paths:
+        return
+    run_write(
+        """
+        MATCH (document:Document)
+        WHERE document.source_path IN $source_paths
+        WITH collect(document) AS documents,
+            collect(document.source_path) AS deleted_source_paths
+        OPTIONAL MATCH (:Concept)-[legal_relation]->(:Concept)
+        WHERE legal_relation.source_path IN deleted_source_paths
+        WITH documents, deleted_source_paths, collect(legal_relation) AS legal_relations
+        FOREACH (legal_relation IN legal_relations | DELETE legal_relation)
+        WITH documents, deleted_source_paths
+        OPTIONAL MATCH (chunk:Chunk)
+        WHERE chunk.source_path IN deleted_source_paths
+        WITH documents, deleted_source_paths, collect(chunk) AS chunks
+        OPTIONAL MATCH (definition:Definition)
+        WHERE definition.source_path IN deleted_source_paths
+        WITH documents, deleted_source_paths, chunks, collect(definition) AS definitions
+        OPTIONAL MATCH (citation:Citation)
+        WHERE citation.source_path IN deleted_source_paths
+        WITH documents, deleted_source_paths, chunks, definitions, collect(citation) AS citations
+        OPTIONAL MATCH (case_node:Case)
+        WHERE case_node.source_path IN deleted_source_paths
+        WITH documents, deleted_source_paths, chunks, definitions, citations, collect(case_node) AS cases
+        OPTIONAL MATCH (holding:Holding)
+        WHERE holding.source_path IN deleted_source_paths
+        WITH documents, deleted_source_paths, chunks, definitions, citations, cases, collect(holding) AS holdings
+        OPTIONAL MATCH (legal_unit:LegalUnit)
+        WHERE legal_unit.source_path IN deleted_source_paths
+        WITH documents, chunks, definitions, citations, cases, holdings, collect(legal_unit) AS legal_units
+        FOREACH (definition IN definitions | DETACH DELETE definition)
+        FOREACH (citation IN citations | DETACH DELETE citation)
+        FOREACH (holding IN holdings | DETACH DELETE holding)
+        FOREACH (case_node IN cases | DETACH DELETE case_node)
+        FOREACH (chunk IN chunks | DETACH DELETE chunk)
+        FOREACH (legal_unit IN legal_units | DETACH DELETE legal_unit)
+        FOREACH (document IN documents | DETACH DELETE document)
+        WITH 1 AS _
+        MATCH (term:Term)
+        WHERE NOT (term)--()
+        DETACH DELETE term
+        WITH 1 AS _
+        MATCH (concept:Concept)
+        WHERE NOT (concept)--()
+        DETACH DELETE concept
+        """,
+        source_paths=source_paths,
+    )
+
+
+def write_document_node(run_write, source_path, document_name, source_mtime_ns, chunk_count):
+    run_write(
+        """
+        MERGE (document:Document {source_path: $source_path})
+        SET
+            document.name = $document_name,
+            document.mtime_ns = $source_mtime_ns,
+            document.embedding_model = $embedding_model,
+            document.chunking_version = $chunking_version,
+            document.document_type = $document_type,
+            document.max_words = $max_words,
+            document.chunk_count = $chunk_count,
+            document.indexed_at = datetime()
+        """,
+        source_path=source_path,
+        document_name=document_name,
+        source_mtime_ns=source_mtime_ns,
+        embedding_model=EMBEDDING_MODEL,
+        chunking_version=CHUNKING_VERSION,
+        document_type=document_type_from_source_path(source_path),
+        max_words=DEFAULT_MAX_WORDS,
+        chunk_count=chunk_count,
+    )
+
+
+def write_chunk_nodes(run_write, chunk_rows):
+    run_write(
+        """
+        UNWIND $chunk_rows AS row
+        MATCH (document:Document {source_path: row.source_path})
+        CREATE (chunk:Chunk:SourceChunk {
+            id: row.id,
+            content: row.content,
+            heading_path: row.heading_path,
+            embedding: row.embedding,
+            chunk_number: row.chunk_number,
+            document_name: row.document_name,
+            group_id: row.group_id,
+            part: row.part,
+            source_path: row.source_path
+        })
+        MERGE (document)-[:CONTAINS]->(chunk)
+        """,
+        chunk_rows=chunk_rows,
+    )
+
+
+def write_legal_unit_nodes(run_write, source_path, legal_unit_rows):
+    run_write(
+        """
+        MATCH (document:Document {source_path: $source_path})
+        UNWIND $legal_unit_rows AS row
+        MERGE (legal_unit:LegalUnit {id: row.id})
+        SET
+            legal_unit.kind = row.kind,
+            legal_unit.number = row.number,
+            legal_unit.title = row.title,
+            legal_unit.order = row.order,
+            legal_unit.source_path = row.source_path,
+            legal_unit.document_name = row.document_name
+        WITH document, collect(row) AS rows
+        UNWIND rows AS row
+        MATCH (legal_unit:LegalUnit {id: row.id})
+        FOREACH (_ IN CASE WHEN row.parent_id IS NULL THEN [1] ELSE [] END |
+            MERGE (document)-[:CONTAINS]->(legal_unit)
+        )
+        WITH row, legal_unit
+        OPTIONAL MATCH (parent:LegalUnit {id: row.parent_id})
+        FOREACH (_ IN CASE WHEN parent IS NULL THEN [] ELSE [1] END |
+            MERGE (parent)-[:CONTAINS]->(legal_unit)
+        )
+        """,
+        source_path=source_path,
+        legal_unit_rows=legal_unit_rows,
+    )
+
+
+def write_chunk_legal_unit_links(run_write, chunk_rows):
+    run_write(
+        """
+        UNWIND $chunk_rows AS row
+        MATCH (chunk:Chunk {id: row.id})
+        OPTIONAL MATCH (legal_unit:LegalUnit {id: row.legal_unit_id})
+        FOREACH (_ IN CASE WHEN legal_unit IS NULL THEN [] ELSE [1] END |
+            MERGE (legal_unit)-[:SUPPORTED_BY]->(chunk)
+        )
+        """,
+        chunk_rows=chunk_rows,
+    )
+
+
+def write_definition_nodes(run_write, definition_rows):
+    run_write(
+        """
+        UNWIND $definition_rows AS row
+        MERGE (term:Term {id: row.term_id})
+        SET
+            term.name = row.term
+        MERGE (definition:Definition {id: row.id})
+        SET
+            definition.text = row.text,
+            definition.chunk_id = row.chunk_id,
+            definition.chunk_number = row.chunk_number,
+            definition.source_path = row.source_path,
+            definition.document_name = row.document_name,
+            definition.article_number = row.article_number,
+            definition.article_title = row.article_title
+        MERGE (term)-[:DEFINED_AS]->(definition)
+        WITH row, definition
+        OPTIONAL MATCH (article:LegalUnit {id: row.article_id, kind: "article"})
+        FOREACH (_ IN CASE WHEN article IS NULL THEN [] ELSE [1] END |
+            MERGE (definition)-[:DEFINED_IN]->(article)
+        )
+        """,
+        definition_rows=definition_rows,
+    )
+
+
+def write_index_transaction(
+    tx,
+    source_path,
+    document_name,
+    source_mtime_ns,
+    chunk_rows,
+    legal_unit_rows,
+    definition_rows,
+    triple_rows,
+    connection_rows,
+    case_row,
+    holding_rows,
+):
+    def run_write(query, **parameters):
+        tx.run(query, **parameters).consume()
+
+    delete_source_paths(run_write, [source_path])
+    write_document_node(
+        run_write,
+        source_path,
+        document_name,
+        source_mtime_ns,
+        len(chunk_rows),
+    )
+    if not chunk_rows:
+        return
+
+    write_chunk_nodes(run_write, chunk_rows)
+    write_legal_unit_nodes(run_write, source_path, legal_unit_rows)
+    write_chunk_legal_unit_links(run_write, chunk_rows)
+    write_definition_nodes(run_write, definition_rows)
+    write_case_nodes(run_write, case_row, holding_rows)
+    write_triples(run_write, triple_rows)
+    write_connections(run_write, connection_rows)

@@ -3,7 +3,7 @@ import re
 
 ARTICLE_PATTERN = re.compile(r"제\d+조(?:의\d+)?")
 CITATION_PATTERN = re.compile(
-    r"제\d+조(?:의\d+)?(?:제\d+(?:항|호|목)|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])?"
+    r"제\d+조(?:의\d+)?(?:제\d+(?:항|호|목)|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])*"
 )
 FULL_CITATION_PATTERN = re.compile(
     r"(?:[「\"](?P<law_name>[^」\"]+)[」\"]\s*)?"
@@ -20,6 +20,7 @@ CONCEPT_STOP_TERMS = {
     "개인",
     "것",
     "기관",
+    "결정",
     "때",
     "법",
     "내용",
@@ -29,10 +30,13 @@ CONCEPT_STOP_TERMS = {
     "사실",
     "사항",
     "경우",
+    "일부",
     "방법",
     "기준",
     "자료",
     "업무",
+    "포함",
+    "해당",
     "이",
     "자",
     "정보",
@@ -51,6 +55,8 @@ CONCEPT_STOP_TERMS = {
     "제4호",
     "제5호",
 }
+CONCEPT_STOP_TERMS_LIST = sorted(CONCEPT_STOP_TERMS)
+GRAPH_FACT_ID_PREFIX = "graph-fact::"
 QUERY_STOP_TERMS = {
     "what",
     "which",
@@ -83,3 +89,27 @@ QUERY_STOP_TERMS = {
     "수",
     "가능",
 }
+STRUCTURE_PATTERNS = [
+    ("chapter", re.compile(r"^(?P<number>제\d+장)\s*(?P<title>.*)")),
+    (
+        "chapter",
+        re.compile(
+            r"^(?P<number>Article\s+[IVXLCDM\d]+)\.?\s*(?P<title>.*)",
+            re.IGNORECASE,
+        ),
+    ),
+    ("chapter", re.compile(r"^(?P<number>ARTICLE\s+[A-Z]+)\.?\s*(?P<title>.*)")),
+    ("section", re.compile(r"^(?P<number>제\d+절)\s*(?P<title>.*)")),
+    ("article", re.compile(r"^(?P<number>제\d+조(?:의\d+)?)(?:\((?P<title>[^)]*)\))?")),
+    (
+        "article",
+        re.compile(
+            r"^(?P<number>Section\s+\d+)\.?\s*(?P<title>.*)",
+            re.IGNORECASE,
+        ),
+    ),
+    ("clause", re.compile(r"^(?P<number>[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])\s*(?P<title>.*)")),
+    ("item", re.compile(r"^(?P<number>\d+\.)\s*(?P<title>.*)")),
+    ("subitem", re.compile(r"^(?P<number>[가-하]\.)\s*(?P<title>.*)")),
+]
+STRUCTURE_KINDS = list(dict.fromkeys(kind for kind, _pattern in STRUCTURE_PATTERNS))
