@@ -91,6 +91,9 @@ LEGALRAG_CONTAINER_ENGINE=podman ./scripts/dev
 LEGALRAG_CONTAINER_ENGINE=podman ./scripts/run
 ```
 
+The Podman script path uses `podman run` directly for Neo4j, so it does not
+depend on a working `podman compose` provider.
+
 The default embedding model is `intfloat/multilingual-e5-small`. Use the same
 embedding model for indexing and app runtime.
 
@@ -203,7 +206,16 @@ python -m uvicorn backend.web:app --host 127.0.0.1 --port 8000
 With Podman, start Neo4j with:
 
 ```bash
-podman compose up -d neo4j
+podman volume exists legalrag_neo4j_data || podman volume create legalrag_neo4j_data
+podman volume exists legalrag_neo4j_logs || podman volume create legalrag_neo4j_logs
+podman run -d \
+  --name legalrag-neo4j \
+  -p 7474:7474 \
+  -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-legalrag-password} \
+  -v legalrag_neo4j_data:/data \
+  -v legalrag_neo4j_logs:/logs \
+  neo4j:5.26-community
 ```
 
 vLLM startup:
