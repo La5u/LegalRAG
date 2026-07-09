@@ -12,7 +12,7 @@ from backend.connections import extract_connections
 from backend.constants import STRUCTURE_KINDS
 from backend.definitions import extract_definitions
 from backend.document import Document
-from backend.document_types import document_type_from_source_path, has_structural_legal_units
+from backend.document_types import has_structural_legal_units
 from backend.graph_index import (
     build_case_rows,
     build_legal_unit_rows,

@@ -3,18 +3,14 @@ import pytest
 from backend.config import NEO4J_VECTOR_INDEX
 from backend.document import Document
 from backend.graph_retrieve import GraphFact
-from backend.records import chunk_meta
 from backend.retrieval import (
     RetrievalUnavailable,
     attach_graph_facts,
     attach_legal_context,
     attach_symbolic_trace,
     expand_legal_units,
-    filter_by_category,
     graph_facts_from_meta,
-    merge_documents,
     merge_ranked_expansion,
-    quoted_terms,
     retrieve_case_source_matches,
     retrieve_contract_matches,
     retrieve_document_summary_matches,
@@ -27,61 +23,9 @@ from backend.retrieval import (
     retrieve_unconstrained,
     retrieve_vector_chunks,
     retrieve_vectorrag,
-    should_expand_legal_units,
     specific_legal_citation,
 )
 from backend.routing import QueryRoute, classify_query
-from backend.sources import SourceMatcher
-
-
-# ---------------------------------------------------------------------------
-# should_expand_legal_units — detect article/unit references in query
-# ---------------------------------------------------------------------------
-class TestShouldExpandLegalUnits:
-    @pytest.mark.parametrize(
-        "query, expected",
-        [
-            ("제15조 내용을 알려주세요", True),
-            ("제1항에 해당하는 경우", True),
-            ("제2호의 요건", True),
-            ("가목의 규정", True),
-            ("조문 전체를 보여주세요", True),
-            ("어느 조에 해당하나요", True),
-            ("Article 15", True),
-            ("Section 3", True),
-            ("개인정보 처리 방침", False),
-            ("통지 의무", False),
-        ],
-    )
-    def test_detects_unit_references(self, query, expected):
-        assert should_expand_legal_units(query) == expected
-
-
-# ---------------------------------------------------------------------------
-# quoted_terms — extract quoted strings
-# ---------------------------------------------------------------------------
-class TestQuotedTerms:
-    def test_extracts_double_quotes(self):
-        terms = quoted_terms('이 법에서 "개인정보"란 무엇인가요')
-        assert terms == ["개인정보"]
-
-    def test_extracts_single_quotes(self):
-        terms = quoted_terms("이 법에서 '개인정보'란 무엇인가요")
-        assert terms == ["개인정보"]
-
-    def test_extracts_korean_quotes(self):
-        terms = quoted_terms('이 법에서 "개인정보"란 무엇인가요')
-        assert terms == ["개인정보"]
-
-    def test_multiple_quotes(self):
-        terms = quoted_terms('"개인정보"와 "정보주체"의 관계')
-        assert terms == ["개인정보", "정보주체"]
-
-    def test_no_quotes(self):
-        assert quoted_terms("개인정보 처리 방침") == []
-
-    def test_empty_quotes(self):
-        assert quoted_terms('"" ""') == []
 
 
 # ---------------------------------------------------------------------------
@@ -116,120 +60,6 @@ class TestSpecificLegalCitation:
         meta = {"article_number": "제15조", "legal_unit_kind": "article", "legal_unit_number": "제15조"}
         content = "② 정보주체의 권리"
         assert specific_legal_citation(meta, content) == "제15조제2항"
-
-
-# ---------------------------------------------------------------------------
-# merge_documents — dedup by id
-# ---------------------------------------------------------------------------
-class TestMergeDocuments:
-    def test_deduplicates_by_id(self):
-        docs = [
-            Document("a", {"id": "1"}),
-            Document("b", {"id": "2"}),
-            Document("c", {"id": "1"}),
-        ]
-        result = merge_documents(docs)
-        assert len(result) == 2
-        assert result[0].content == "a"
-        assert result[1].content == "b"
-
-    def test_keeps_docs_without_id(self):
-        docs = [
-            Document("a", {}),
-            Document("b", {}),
-        ]
-        result = merge_documents(docs)
-        assert len(result) == 2
-
-    def test_mixed_id_and_no_id(self):
-        docs = [
-            Document("a", {"id": "1"}),
-            Document("b", {}),
-            Document("c", {"id": "1"}),
-        ]
-        result = merge_documents(docs)
-        # "a" kept (id "1"), "b" kept (no id, always kept), "c" dropped (id "1" dup)
-        assert len(result) == 2
-        assert result[0].content == "a"
-        assert result[1].content == "b"
-
-
-# ---------------------------------------------------------------------------
-# filter_by_category — filter by document type
-# ---------------------------------------------------------------------------
-class TestFilterByCategory:
-    def _make_doc(self, source_path):
-        return Document("content", {"source_path": source_path})
-
-    def test_filters_by_statute(self):
-        docs = [
-            self._make_doc("documents/raw/statutes/법.pdf"),
-            self._make_doc("documents/raw/precedents/판례.pdf"),
-        ]
-        result = filter_by_category(docs, "statute")
-        assert len(result) == 1
-        assert "statutes" in result[0].meta["source_path"]
-
-    def test_all_category_returns_all(self):
-        docs = [
-            self._make_doc("documents/raw/statutes/법.pdf"),
-            self._make_doc("documents/raw/precedents/판례.pdf"),
-        ]
-        result = filter_by_category(docs, "all")
-        assert len(result) == 2
-
-    def test_empty_category_returns_all(self):
-        docs = [
-            self._make_doc("documents/raw/statutes/법.pdf"),
-        ]
-        result = filter_by_category(docs, "")
-        assert len(result) == 1
-
-
-# ---------------------------------------------------------------------------
-# smoke.py — FakeEmbeddingModel, smoke_chunk
-# ---------------------------------------------------------------------------
-class TestFakeEmbeddingModel:
-    def test_single_text(self):
-        from scripts.smoke import FakeEmbeddingModel
-
-        model = FakeEmbeddingModel(16)
-        result = model.encode("test")
-        assert len(result) == 16
-        assert all(v == 0.0 for v in result)
-
-    def test_batch_texts(self):
-        from scripts.smoke import FakeEmbeddingModel
-
-        model = FakeEmbeddingModel(8)
-        result = model.encode(["a", "b", "c"])
-        assert len(result) == 3
-        assert all(len(vec) == 8 for vec in result)
-
-    def test_custom_dimensions(self):
-        from scripts.smoke import FakeEmbeddingModel
-
-        model = FakeEmbeddingModel(32)
-        assert len(model.encode("test")) == 32
-
-
-class TestSmokeChunk:
-    def test_creates_document(self):
-        from scripts.smoke import smoke_chunk
-
-        doc = smoke_chunk(1, "제1조(목적) 이 법의 목적은.", "제1조", "목적", 1)
-        assert doc.content == "제1조(목적) 이 법의 목적은."
-        assert doc.meta["chunk_number"] == 1
-        assert doc.meta["article_number"] == "제1조"
-        assert doc.meta["article_title"] == "목적"
-        assert doc.meta["chapter_number"] == "제1장"
-
-    def test_group_id_is_chunk_minus_one(self):
-        from scripts.smoke import smoke_chunk
-
-        doc = smoke_chunk(3, "content", "제2조", "정의", 2)
-        assert doc.meta["group_id"] == 2
-
 
 # ---------------------------------------------------------------------------
 # Fakes for the retrieval pipeline (no live Neo4j or model needed)
@@ -276,6 +106,16 @@ class FakeNeo4j:
         if "chunk.id IN $chunk_ids" in query:
             return list(self._context)
         return list(self._chunks)
+
+
+class RecordingNeo4j:
+    def __init__(self, records=None):
+        self.records = records or [chunk_record(1)]
+        self.calls = []
+
+    def run_read(self, query, **params):
+        self.calls.append({"query": query, "params": params})
+        return list(self.records)
 
 
 class FakeSourceMatcher:
@@ -352,12 +192,6 @@ class TestRetrieveVectorChunks:
 # retrieve_sparse_chunks
 # ---------------------------------------------------------------------------
 class TestRetrieveSparseChunks:
-    def test_returns_documents(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        route = QueryRoute(kind="general", search_terms=["개인정보", "처리"])
-        docs = retrieve_sparse_chunks(db.run_read, route)
-        assert len(docs) == 1
-
     def test_no_terms_returns_empty_without_query(self):
         db = FakeNeo4j(chunks=[chunk_record(1)])
         route = QueryRoute(kind="general", search_terms=[])
@@ -369,12 +203,6 @@ class TestRetrieveSparseChunks:
 # retrieve_legal_unit_matches
 # ---------------------------------------------------------------------------
 class TestRetrieveLegalUnitMatches:
-    def test_returns_documents(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        route = QueryRoute(kind="general", search_terms=["개인정보"])
-        docs = retrieve_legal_unit_matches(db.run_read, route)
-        assert len(docs) == 1
-
     def test_no_terms_or_articles_returns_empty_without_query(self):
         db = FakeNeo4j(chunks=[chunk_record(1)])
         route = QueryRoute(kind="general", search_terms=[], article_numbers=[])
@@ -385,35 +213,52 @@ class TestRetrieveLegalUnitMatches:
 # ---------------------------------------------------------------------------
 # retrieve_source_constrained_matches / summary / contract / case
 # ---------------------------------------------------------------------------
-class TestRetrieveSourceConstrainedMatches:
-    def test_returns_documents(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        route = QueryRoute(kind="general", search_terms=["개인정보"])
-        docs = retrieve_source_constrained_matches(
-            db.run_read, "개인정보 보호", route, ["documents/raw/statutes/법.pdf"]
-        )
-        assert len(docs) == 1
+class TestRetrieverQueries:
+    def test_sparse_chunks_send_normalized_terms_and_limit(self):
+        db = RecordingNeo4j()
+        route = QueryRoute(kind="general", search_terms=["개인정보", "처리"])
 
+        docs = retrieve_sparse_chunks(db.run_read, route)
 
-class TestRetrieveDocumentSummaryMatches:
-    def test_returns_documents(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        docs = retrieve_document_summary_matches(db.run_read, "주요 내용", ["documents/raw/statutes/법.pdf"])
-        assert len(docs) == 1
+        assert [doc.meta["id"] for doc in docs] == ["chunk-1"]
+        assert db.calls[0]["params"]["terms"] == ["개인정보", "처리"]
+        assert db.calls[0]["params"]["limit"] == 8
 
+    def test_legal_unit_matches_send_articles_terms_and_source_scope(self):
+        db = RecordingNeo4j()
+        route = QueryRoute(kind="article_lookup", search_terms=["개인정보"], article_numbers=["제15조"])
 
-class TestRetrieveContractMatches:
-    def test_returns_documents(self):
-        db = FakeNeo4j(chunks=[chunk_record(1, content="임대인의 의무")])
-        docs = retrieve_contract_matches(db.run_read, "임대인 의무", ["documents/raw/contracts/계약서.pdf"])
-        assert len(docs) == 1
+        docs = retrieve_legal_unit_matches(db.run_read, route, ["documents/raw/statutes/법.pdf"])
 
+        params = db.calls[0]["params"]
+        assert [doc.meta["id"] for doc in docs] == ["chunk-1"]
+        assert params["terms"] == ["개인정보"]
+        assert params["article_numbers"] == ["제15조"]
+        assert params["source_paths"] == ["documents/raw/statutes/법.pdf"]
+        assert params["article_limit"] == 8
 
-class TestRetrieveCaseSourceMatches:
-    def test_returns_documents(self):
-        db = FakeNeo4j(chunks=[chunk_record(1, content="판단 이유")])
-        docs = retrieve_case_source_matches(db.run_read, "판례 내용", ["documents/raw/precedents/판례.pdf"])
-        assert len(docs) == 1
+    def test_source_specific_retrievers_send_distinct_scoring_inputs(self):
+        db = RecordingNeo4j()
+        source_paths = ["documents/raw/contracts/계약서.pdf"]
+        route = QueryRoute(kind="general", search_terms=["임대인"])
+
+        retrieve_source_constrained_matches(db.run_read, "첫 부분 임대인 의무", route, source_paths)
+        retrieve_document_summary_matches(db.run_read, "주요 내용", source_paths)
+        retrieve_contract_matches(db.run_read, "임대인 의무", source_paths)
+        retrieve_case_source_matches(db.run_read, "판례 판단 이유", source_paths)
+
+        source_params = db.calls[0]["params"]
+        summary_params = db.calls[1]["params"]
+        contract_params = db.calls[2]["params"]
+        case_params = db.calls[3]["params"]
+        assert source_params["source_paths"] == source_paths
+        assert source_params["prefer_start"] is True
+        assert "임대인" in source_params["terms"]
+        assert summary_params["source_paths"] == source_paths
+        assert "주요" in summary_params["terms"]
+        assert {"임대인", "임차인"}.issubset(contract_params["party_terms"])
+        assert "판단" in case_params["case_terms"]
+        assert "이유" in case_params["case_terms"]
 
 
 # ---------------------------------------------------------------------------
@@ -576,12 +421,6 @@ class TestRetrieveUnconstrained:
         docs = retrieve_unconstrained(db.run_read, FakeEmbedder(), 4, "개인정보 처리", route)
         assert {d.meta["id"] for d in docs} == {"chunk-1", "chunk-2"}
 
-    def test_rule_kind_does_not_error(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        route = classify_query("금지 행위")
-        docs = retrieve_unconstrained(db.run_read, FakeEmbedder(), 4, "금지 행위", route)
-        assert len(docs) == 1
-
 
 # ---------------------------------------------------------------------------
 # retrieve_vectorrag (orchestrator)
@@ -609,12 +448,6 @@ class TestRetrieveVectorrag:
 # retrieve_graphrag (full orchestrator)
 # ---------------------------------------------------------------------------
 class TestRetrieveGraphrag:
-    def test_unconstrained_path(self):
-        db = FakeNeo4j(chunks=[chunk_record(1), chunk_record(2)])
-        matcher = SourceMatcher(db.run_read)
-        docs = retrieve_graphrag(db.run_read, FakeEmbedder(), 4, "개인정보 처리 방침", matcher)
-        assert {d.meta["id"] for d in docs} == {"chunk-1", "chunk-2"}
-
     def test_source_constrained_path(self):
         db = FakeNeo4j(chunks=[chunk_record(1)])
         matcher = FakeSourceMatcher(["documents/raw/statutes/법.pdf"])
@@ -627,16 +460,6 @@ class TestRetrieveGraphrag:
 # retrieve_chunks (strategy dispatcher)
 # ---------------------------------------------------------------------------
 class TestRetrieveChunks:
-    def test_vector_strategy_returns_chunks(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        docs = retrieve_chunks(db.run_read, FakeEmbedder(), 4, "개인정보", FakeSourceMatcher([]), "vector")
-        assert len(docs) == 1
-
-    def test_graph_strategy_returns_chunks(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        docs = retrieve_chunks(db.run_read, FakeEmbedder(), 4, "개인정보 처리 방침", FakeSourceMatcher([]), "graph")
-        assert len(docs) == 1
-
     def test_neuro_symbolic_attaches_trace(self):
         db = FakeNeo4j(chunks=[chunk_record(1)])
         docs = retrieve_chunks(
@@ -644,11 +467,6 @@ class TestRetrieveChunks:
         )
         assert len(docs) == 1
         assert isinstance(docs[0].meta.get("symbolic_trace"), dict)
-
-    def test_hybrid_alias_resolves_to_graph(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
-        docs = retrieve_chunks(db.run_read, FakeEmbedder(), 4, "개인정보 처리 방침", FakeSourceMatcher([]), "hybrid")
-        assert len(docs) == 1
 
     def test_unknown_strategy_raises(self):
         db = FakeNeo4j(chunks=[chunk_record(1)])

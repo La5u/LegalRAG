@@ -1,15 +1,12 @@
 import pytest
 
 from backend.sources import (
-    CONTRACT_TERMS,
-    DOCUMENT_SUMMARY_TERMS,
-    SOURCE_ALIASES,
+    SourceMatcher,
     explicit_source_terms,
     is_case_query,
     is_contract_query,
     is_document_summary_query,
     normalize_source_text,
-    source_name_terms,
     source_name_overlap,
 )
 
@@ -39,23 +36,6 @@ class TestNormalizeSourceText:
     def test_strips_special_chars(self):
         result = normalize_source_text("hello[world]★test")
         assert result == "helloworldtest"
-
-
-# ---------------------------------------------------------------------------
-# source_name_terms — extract normalized terms from name/path
-# ---------------------------------------------------------------------------
-class TestSourceNameTerms:
-    def test_extracts_from_name(self):
-        terms = source_name_terms("개인정보보호법(법률)", "documents/raw/statutes/개인정보보호법(법률).pdf")
-        assert any("개인정보보호법" in t for t in terms)
-
-    def test_filters_short_terms(self):
-        terms = source_name_terms("abc", "short")
-        assert all(len(t) >= 8 for t in terms)
-
-    def test_deduplicates(self):
-        terms = source_name_terms("개인정보보호법", "documents/raw/statutes/개인정보보호법.pdf")
-        assert len(terms) == len(set(terms))
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +136,37 @@ class TestIsCaseQuery:
 
     def test_constitutional_decision_source_type(self):
         assert is_case_query("일반 질문", ["documents/raw/constitutional_decisions/헌재.pdf"])
+
+
+# ---------------------------------------------------------------------------
+# SourceMatcher — cached source constraints
+# ---------------------------------------------------------------------------
+class TestSourceMatcher:
+    def test_invalidate_refreshes_document_index(self):
+        records = [
+            [
+                {
+                    "name": "민법(법률)(제21454호)(20260317).hwpx",
+                    "source_path": "documents/raw/statutes/민법(법률)(제21454호)(20260317).hwpx",
+                }
+            ],
+            [
+                {
+                    "name": "형법(법률)(제21450호)(20260312).hwpx",
+                    "source_path": "documents/raw/statutes/형법(법률)(제21450호)(20260312).hwpx",
+                }
+            ],
+        ]
+
+        def run_read(_query, **_parameters):
+            return records.pop(0)
+
+        matcher = SourceMatcher(run_read)
+
+        assert matcher.constraints("민법에서 권리능력은?") == [
+            "documents/raw/statutes/민법(법률)(제21454호)(20260317).hwpx"
+        ]
+        matcher.invalidate()
+        assert matcher.constraints("형법에서 죄형법정주의는?") == [
+            "documents/raw/statutes/형법(법률)(제21450호)(20260312).hwpx"
+        ]

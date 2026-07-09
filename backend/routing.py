@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 import re
 
-from backend.constants import ARTICLE_PATTERN, QUERY_STOP_TERMS, TOKEN_PATTERN
-from backend.text import get_kiwi
+from backend.constants import ARTICLE_PATTERN, QUERY_STOP_TERMS
+from backend.text import get_kiwi, query_terms
 
 QUOTED_PATTERN = re.compile(r"[\"'“”‘’](.*?)[\"'“”‘’]")
 
@@ -83,12 +83,12 @@ def classify_query(query: str, category: str | None = None) -> QueryRoute:
         for term in QUOTED_PATTERN.findall(query)
         if term.strip()
     ]
-    token_terms = [
-        term
-        for term in TOKEN_PATTERN.findall(query)
-        if term.casefold() not in QUERY_STOP_TERMS
-    ]
-    search_terms = list(dict.fromkeys(quoted_terms + token_terms))[:10]
+    search_terms = query_terms(
+        query,
+        initial_terms=quoted_terms,
+        ignored_terms=QUERY_STOP_TERMS,
+        max_terms=10,
+    )
     doc_category = category or classify_document_category(query)
 
     if (

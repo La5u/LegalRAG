@@ -2,10 +2,6 @@ import os
 from pathlib import Path
 
 
-def env_bool(name: str, default: str) -> bool:
-    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
-
-
 def configure_runtime_environment() -> None:
     project_root = Path(__file__).resolve().parent.parent
     os.environ.setdefault("HF_HOME", str(project_root / ".cache" / "huggingface"))
@@ -60,7 +56,12 @@ EMBEDDING_BATCH_SIZE = int(
 TEMPERATURE = float(os.getenv("LEGALRAG_TEMPERATURE", "0.1"))
 CONTEXT_WINDOW = int(os.getenv("LEGALRAG_CONTEXT_WINDOW", "4096"))
 MAX_OUTPUT_TOKENS = int(os.getenv("LEGALRAG_MAX_OUTPUT_TOKENS", "700"))
-OLLAMA_THINK = env_bool("LEGALRAG_OLLAMA_THINK", "false")
+OLLAMA_THINK = os.getenv("LEGALRAG_OLLAMA_THINK", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 DEFAULT_MAX_WORDS = int(
     os.getenv("LEGALRAG_MAX_WORDS", EMBEDDING_PROFILE.get("max_words", "180"))

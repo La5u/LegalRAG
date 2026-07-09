@@ -2,14 +2,13 @@ import re
 
 from backend.config import CHUNKING_VERSION, DEFAULT_MAX_WORDS, EMBEDDING_MODEL
 from backend.connections import CONNECTION_RELATIONS
-from backend.constants import CONCEPT_STOP_TERMS, QUERY_STOP_TERMS, STRUCTURE_KINDS
+from backend.constants import CONCEPT_STOP_TERMS, STRUCTURE_KINDS
 from backend.document import Document
 from backend.document_types import (
     document_type_from_source_path,
     has_structural_legal_units,
     is_precedent_document,
 )
-from backend.records import chunk_meta
 from backend.text import strip_korean_particle
 from backend.triples import CONCEPT_RELATION_TYPES, LEGAL_RELATIONS
 

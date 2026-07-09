@@ -1,6 +1,5 @@
 import pytest
 
-from backend.document import Document
 from backend.graph_retrieve import (
     GraphFact,
     article_terms,
@@ -10,7 +9,6 @@ from backend.graph_retrieve import (
     wants_case_fact,
     wants_definition,
 )
-from backend.records import chunk_meta
 
 
 # ---------------------------------------------------------------------------
@@ -166,19 +164,3 @@ class TestGraphFact:
         assert doc.meta["article_number"] == "제15조"
         assert doc.meta["graph_relation"] == "MUST_NOTIFY"
         assert doc.score == 0.95
-
-    def test_to_response(self):
-        fact = GraphFact(
-            id="test-id",
-            document="test.pdf",
-            source_path="documents/raw/statutes/test.pdf",
-            chunk=1,
-            relation="MUST_NOTIFY",
-            path="A -> B",
-            sentence="test",
-            score=0.95,
-        )
-        resp = fact.to_response()
-        assert resp["relation"] == "MUST_NOTIFY"
-        assert resp["path"] == "A -> B"
-        assert resp["score"] == 0.95

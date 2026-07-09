@@ -1,6 +1,6 @@
 from backend.document import Document
 from backend.routing import classify_query
-from backend.text import extract_tokens, strip_korean_particle
+from backend.text import query_terms
 
 
 OBLIGATION_RELATIONS = {"HAS_DUTY", "MUST_NOTIFY"}
@@ -385,12 +385,12 @@ def is_prohibition_fact(document: Document) -> bool:
 
 def relevant_query_terms(query: str) -> list[str]:
     ignored = {"무엇", "어떤", "수", "있나요", "되나요", "없이", "하면", "위한"}
-    terms = []
-    for term in extract_tokens(query):
-        cleaned = strip_korean_particle(term)
-        if len(cleaned) >= 2 and cleaned not in ignored:
-            terms.append(cleaned)
-    return list(dict.fromkeys(terms))
+    return query_terms(
+        query,
+        ignored_terms=ignored,
+        min_length=2,
+        strip_particles=True,
+    )
 
 
 def is_relevant_fact(document: Document, query_terms: list[str]) -> bool:
@@ -431,11 +431,7 @@ def relevance_score(document: Document, query_terms: list[str]) -> int:
 
 
 def matched_terms(query: str) -> list[str]:
-    return [
-        term
-        for term in extract_tokens(query)
-        if term.casefold() not in {"what", "which", "where"}
-    ][:12]
+    return query_terms(query, ignored_terms={"what", "which", "where"}, max_terms=12)
 
 
 def supporting_chunks(evidence: list[Document], limit: int) -> list[str]:

@@ -134,53 +134,79 @@ async def stream_answer(
 
 
 async def stream_payload(request: dict, callback) -> None:
-    async with httpx.AsyncClient(timeout=600) as client:
-        async with client.stream(
-            "POST",
-            f"{OLLAMA_URL}/api/chat",
-            json=request,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning("Skipping non-JSON Ollama stream line: %r", line)
-                    continue
-                message = event.get("message", {})
-                token = message.get("content")
-                if token:
-                    await callback(token)
+    await stream_json_tokens(
+        f"{OLLAMA_URL}/api/chat",
+        request,
+        callback,
+        parse_ollama_line,
+        token_from_ollama_event,
+    )
 
 
 async def stream_vllm_payload(request: dict, callback) -> None:
+    await stream_json_tokens(
+        f"{VLLM_URL}/v1/chat/completions",
+        request,
+        callback,
+        parse_vllm_line,
+        token_from_vllm_event,
+    )
+
+
+async def stream_json_tokens(
+    url: str,
+    request: dict,
+    callback,
+    parse_line,
+    token_from_event,
+) -> None:
     async with httpx.AsyncClient(timeout=600) as client:
         async with client.stream(
             "POST",
-            f"{VLLM_URL}/v1/chat/completions",
+            url,
             json=request,
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
-                if not line.startswith("data: "):
+                event = parse_line(line)
+                if event is None:
                     continue
-
-                data = line.removeprefix("data: ").strip()
-                if data == "[DONE]":
+                if event == "[DONE]":
                     break
-
-                try:
-                    event = json.loads(data)
-                except json.JSONDecodeError:
-                    logger.warning("Skipping non-JSON vLLM stream line: %r", line)
-                    continue
-
-                choices = event.get("choices", [])
-                if not choices:
-                    continue
-                token = choices[0].get("delta", {}).get("content")
+                token = token_from_event(event)
                 if token:
                     await callback(token)
+
+
+def parse_ollama_line(line: str):
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        logger.warning("Skipping non-JSON Ollama stream line: %r", line)
+        return None
+
+
+def parse_vllm_line(line: str):
+    if not line.startswith("data: "):
+        return None
+    data = line.removeprefix("data: ").strip()
+    if data == "[DONE]":
+        return "[DONE]"
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        logger.warning("Skipping non-JSON vLLM stream line: %r", line)
+        return None
+
+
+def token_from_ollama_event(event: dict) -> str | None:
+    return event.get("message", {}).get("content")
+
+
+def token_from_vllm_event(event: dict) -> str | None:
+    choices = event.get("choices", [])
+    if not choices:
+        return None
+    return choices[0].get("delta", {}).get("content")

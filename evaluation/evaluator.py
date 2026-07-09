@@ -222,31 +222,11 @@ async def evaluate_question(
     await rag.generate_async(question.question, chunks, collect)
     latency = perf_counter() - started_at
     answer = "".join(answer_parts)
-
-    mode = question.evaluation_mode
-    if mode == "exact":
-        score = score_exact(answer, question.gold_answer)
-        details = "exact_match" if score == 1.0 else "mismatch"
-    elif mode == "yes_no":
-        score = score_yes_no(answer, question.gold_answer)
-        details = "yes_no_correct" if score == 1.0 else "yes_no_incorrect"
-    elif mode == "citation":
-        score = score_citation(answer, retrieved_citations, question.gold_citations)
-        details = f"citation_score_{score:.2f}"
-    elif mode == "llm_judge":
-        citation_ok = (
-            score_citation(answer, retrieved_citations, question.gold_citations)
-            if question.gold_citations
-            else 1.0
-        )
-        llm_score = await score_llm_judge(
-            question.question, answer, question.gold_answer
-        )
-        score = 0.7 * llm_score + 0.3 * citation_ok
-        details = f"llm_judge={llm_score:.2f}_citation={citation_ok:.2f}"
-    else:
-        score = 0.0
-        details = "unknown_mode"
+    score, details = await score_generated_answer(
+        question,
+        answer,
+        retrieved_citations,
+    )
 
     return EvaluationResult(
         id=question.id,
@@ -254,7 +234,7 @@ async def evaluate_question(
         question=question.question,
         gold_answer=question.gold_answer,
         gold_citations=question.gold_citations,
-        evaluation_mode=mode,
+        evaluation_mode=question.evaluation_mode,
         answer=answer,
         retrieved_citations=retrieved_citations,
         source_precision=source_precision_score,
@@ -263,6 +243,37 @@ async def evaluate_question(
         details=details,
         symbolic_score=trace_score,
     )
+
+
+async def score_generated_answer(
+    question: EvaluationQuestion,
+    answer: str,
+    retrieved_citations: list[str],
+) -> tuple[float, str]:
+    mode = question.evaluation_mode
+    if mode == "exact":
+        score = score_exact(answer, question.gold_answer)
+        return score, "exact_match" if score == 1.0 else "mismatch"
+    if mode == "yes_no":
+        score = score_yes_no(answer, question.gold_answer)
+        return score, "yes_no_correct" if score == 1.0 else "yes_no_incorrect"
+    if mode == "citation":
+        score = score_citation(answer, retrieved_citations, question.gold_citations)
+        return score, f"citation_score_{score:.2f}"
+    if mode == "llm_judge":
+        citation_ok = (
+            score_citation(answer, retrieved_citations, question.gold_citations)
+            if question.gold_citations
+            else 1.0
+        )
+        llm_score = await score_llm_judge(
+            question.question,
+            answer,
+            question.gold_answer,
+        )
+        score = 0.7 * llm_score + 0.3 * citation_ok
+        return score, f"llm_judge={llm_score:.2f}_citation={citation_ok:.2f}"
+    return 0.0, "unknown_mode"
 
 
 def print_summary(results: list[EvaluationResult]) -> None:

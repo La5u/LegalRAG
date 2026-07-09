@@ -32,13 +32,6 @@ from backend.sources import SourceMatcher
 logger = logging.getLogger(__name__)
 
 
-def chunk_context(chunk: Document) -> str:
-    heading = chunk.meta.get("heading_path")
-    if heading:
-        return f"{heading}\n{chunk.content}"
-    return chunk.content
-
-
 class LegalRAG:
     def __init__(
         self,
@@ -111,9 +104,11 @@ class LegalRAG:
 
     def prune_missing_documents(self, source_paths: list[str]) -> None:
         prune_missing_documents(self._run_read, self._run_write, source_paths)
+        self._source_matcher.invalidate()
 
     def delete_document(self, source_path: str) -> None:
         delete_source_paths(self._run_write, [source_path])
+        self._source_matcher.invalidate()
 
     def relink_citations(self) -> None:
         relink_citation_targets(self._run_write)
@@ -124,8 +119,6 @@ class LegalRAG:
         source_path: str,
         source_mtime_ns: int,
     ) -> None:
-        logger.info("Indexing %s with %s chunks.", source_path, len(chunks))
-
         index_rows = index_document(
             self._run_write,
             self._run_read,
@@ -150,6 +143,7 @@ class LegalRAG:
                 index_rows["case_row"],
                 index_rows["holding_rows"],
             )
+        self._source_matcher.invalidate()
         logger.info("Finished indexing %s.", source_path)
 
     def list_documents(self) -> list[dict]:
@@ -193,7 +187,10 @@ class LegalRAG:
         )
         chunks = prioritize_symbolic_evidence(chunks, trace)
         context = "\n\n".join(
-            f"[{citation_number}]\n{chunk_context(chunk)}"
+            f"[{citation_number}]\n"
+            + "\n".join(
+                part for part in (chunk.meta.get("heading_path"), chunk.content) if part
+            )
             for citation_number, chunk in enumerate(chunks, start=1)
         )
         await stream_answer(

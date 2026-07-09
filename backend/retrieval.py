@@ -1,7 +1,8 @@
 import re
+from dataclasses import dataclass
 
 from backend.config import NEO4J_VECTOR_INDEX, normalize_retrieval_strategy
-from backend.constants import CIRCLED_CLAUSE_MARKS, GRAPH_FACT_ID_PREFIX, TOKEN_PATTERN
+from backend.constants import CIRCLED_CLAUSE_MARKS, GRAPH_FACT_ID_PREFIX
 from backend.document import Document
 from backend.document_types import document_type_from_source_path
 from backend.graph_retrieve import GraphFact, graph_facts
@@ -16,7 +17,7 @@ from backend.sources import (
     is_contract_query,
     is_document_summary_query,
 )
-from backend.text import strip_korean_particle
+from backend.text import query_terms
 
 
 LEGAL_UNIT_MATCH_LIMIT = 8
@@ -67,6 +68,16 @@ LEGAL_UNIT_QUERY_TERMS = (
 )
 
 
+@dataclass(frozen=True)
+class RetrievalContext:
+    query: str
+    route: QueryRoute
+    source_paths: list[str]
+    is_summary_query: bool
+    is_contract_query: bool
+    is_case_query: bool
+
+
 class RetrievalUnavailable(RuntimeError):
     """Raised when retrieval cannot run because the index is not ready."""
 
@@ -87,18 +98,22 @@ def quoted_terms(query: str) -> list[str]:
 
 
 def source_query_terms(query: str, route: QueryRoute) -> list[str]:
-    terms = []
-    for term in route.search_terms + TOKEN_PATTERN.findall(query):
-        cleaned = strip_korean_particle(term)
-        if cleaned in SOURCE_ALIASES or cleaned in {"대법원", "헌재", "헌법재판소"}:
-            continue
-        if len(cleaned) >= 2:
-            terms.append(cleaned)
-            if cleaned == "표시광고":
-                terms.extend(["표시", "광고"])
+    terms = query_terms(
+        query,
+        initial_terms=route.search_terms,
+        ignored_terms=set(SOURCE_ALIASES) | {"대법원", "헌재", "헌법재판소"},
+        max_terms=12,
+        min_length=2,
+        strip_particles=True,
+    )
+    expanded_terms = []
+    for cleaned in terms:
+        expanded_terms.append(cleaned)
+        if cleaned == "표시광고":
+            expanded_terms.extend(["표시", "광고"])
     if "비교" in query and "광고" in query:
-        terms.extend(["부당하게", "비교하는"])
-    return list(dict.fromkeys(terms))[:12]
+        expanded_terms.extend(["부당하게", "비교하는"])
+    return list(dict.fromkeys(expanded_terms))[:12]
 
 
 def retrieve_exact_phrase_matches(
@@ -162,11 +177,13 @@ def retrieve_vector_chunks(run_read, embedding_model, top_k, query) -> list[Docu
 
 
 def retrieve_sparse_chunks(run_read, route) -> list[Document]:
-    terms = []
-    for term in route.search_terms:
-        cleaned = strip_korean_particle(term)
-        if len(cleaned) >= 2 and cleaned not in SOURCE_ALIASES:
-            terms.append(cleaned)
+    terms = query_terms(
+        "",
+        initial_terms=route.search_terms,
+        ignored_terms=set(SOURCE_ALIASES),
+        min_length=2,
+        strip_particles=True,
+    )
     if not terms:
         return []
 
@@ -195,12 +212,12 @@ def retrieve_legal_unit_matches(
     if not route.search_terms and not route.article_numbers:
         return []
 
-    terms = []
-    for term in route.search_terms:
-        cleaned = strip_korean_particle(term)
-        if len(cleaned) >= 2:
-            terms.append(cleaned)
-    terms = list(dict.fromkeys(terms))
+    terms = query_terms(
+        "",
+        initial_terms=route.search_terms,
+        min_length=2,
+        strip_particles=True,
+    )
     term_pairs = [
         {"left": terms[index], "right": terms[index + 1]}
         for index in range(len(terms) - 1)
@@ -636,7 +653,6 @@ def retrieve_source_first_evidence(
     run_read, query, route, source_paths, is_summary_query, is_contract_query, is_case_query
 ) -> list[Document]:
     exact_chunks = retrieve_exact_phrase_matches(run_read, query, source_paths)
-    source_chunks = retrieve_source_constrained_matches(run_read, query, route, source_paths)
     summary_chunks = (
         retrieve_document_summary_matches(run_read, query, source_paths)
         if is_summary_query
@@ -652,16 +668,63 @@ def retrieve_source_first_evidence(
         if is_case_query
         else []
     )
+    source_chunks = retrieve_source_constrained_matches(run_read, query, route, source_paths)
     lexical_chunks = retrieve_legal_unit_matches(run_read, route, source_paths=source_paths)
     if route.article_numbers:
-        ordered_chunks = (
-            exact_chunks + summary_chunks + contract_chunks + lexical_chunks + case_chunks + source_chunks
+        return merge_documents(
+            exact_chunks
+            + summary_chunks
+            + contract_chunks
+            + lexical_chunks
+            + case_chunks
+            + source_chunks
         )
-    else:
-        ordered_chunks = (
-            exact_chunks + summary_chunks + contract_chunks + case_chunks + source_chunks + lexical_chunks
+    return merge_documents(
+        exact_chunks
+        + summary_chunks
+        + contract_chunks
+        + case_chunks
+        + source_chunks
+        + lexical_chunks
+    )
+
+
+def build_retrieval_context(query: str, source_matcher) -> RetrievalContext:
+    route = classify_query(query)
+    source_paths = source_matcher.constraints(query)
+    return RetrievalContext(
+        query=query,
+        route=route,
+        source_paths=source_paths,
+        is_summary_query=is_document_summary_query(query, source_paths),
+        is_contract_query=is_contract_query(query, source_paths),
+        is_case_query=is_case_query(query, source_paths),
+    )
+
+
+def retrieve_initial_evidence(
+    run_read,
+    embedding_model,
+    top_k,
+    context: RetrievalContext,
+) -> list[Document]:
+    if context.source_paths:
+        return retrieve_source_first_evidence(
+            run_read,
+            context.query,
+            context.route,
+            context.source_paths,
+            context.is_summary_query,
+            context.is_contract_query,
+            context.is_case_query,
         )
-    return merge_documents(ordered_chunks)
+    return retrieve_unconstrained(
+        run_read,
+        embedding_model,
+        top_k,
+        context.query,
+        context.route,
+    )
 
 
 def enrich_chunks(
@@ -680,14 +743,20 @@ def add_graph_facts(
     run_read, chunks, query, route, source_paths, is_summary_query, is_contract_query, top_k
 ) -> list[Document]:
     graph_seed_chunks = chunks[:8]
+    graph_source_paths = source_paths or list(
+        dict.fromkeys(
+            chunk.meta["source_path"]
+            for chunk in graph_seed_chunks[:4]
+            if chunk.meta.get("source_path")
+        )
+    )
     graph_fact_list = (
         graph_facts(
             run_read,
             query,
             graph_seed_chunks,
             chunk_ids=[chunk.meta["id"] for chunk in graph_seed_chunks if chunk.meta.get("id")],
-            source_paths=source_paths
-            or list(dict.fromkeys(chunk.meta["source_path"] for chunk in graph_seed_chunks[:4] if chunk.meta.get("source_path"))),
+            source_paths=graph_source_paths,
             terms=route.search_terms,
         )
         if route.include_graph_facts and not is_summary_query and not is_contract_query
@@ -697,19 +766,26 @@ def add_graph_facts(
 
 
 def retrieve_graphrag(run_read, embedding_model, top_k, query, source_matcher) -> list[Document]:
-    route = classify_query(query)
-    source_paths = source_matcher.constraints(query)
-    is_summary = is_document_summary_query(query, source_paths)
-    is_contract = is_contract_query(query, source_paths)
-    is_case = is_case_query(query, source_paths)
-    if source_paths:
-        chunks = retrieve_source_first_evidence(
-            run_read, query, route, source_paths, is_summary, is_contract, is_case
-        )
-    else:
-        chunks = retrieve_unconstrained(run_read, embedding_model, top_k, query, route)
-    chunks = enrich_chunks(run_read, chunks, query, route, source_paths, is_summary)
-    chunks = add_graph_facts(run_read, chunks, query, route, source_paths, is_summary, is_contract, top_k)
+    context = build_retrieval_context(query, source_matcher)
+    chunks = retrieve_initial_evidence(run_read, embedding_model, top_k, context)
+    chunks = enrich_chunks(
+        run_read,
+        chunks,
+        context.query,
+        context.route,
+        context.source_paths,
+        context.is_summary_query,
+    )
+    chunks = add_graph_facts(
+        run_read,
+        chunks,
+        context.query,
+        context.route,
+        context.source_paths,
+        context.is_summary_query,
+        context.is_contract_query,
+        top_k,
+    )
     return chunks
 
 

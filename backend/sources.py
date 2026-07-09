@@ -10,7 +10,6 @@ SOURCE_ALIASES = {
     "형법": ("형법(",),
     "약관법": ("약관의 규제에 관한 법률",),
     "표시광고법": ("표시ㆍ광고의 공정화에 관한 법률", "표시광고"),
-    "표시ㆍ광고의 공정화에 관한 법률": ("표시ㆍ광고의 공정화에 관한 법률",),
     "개인정보 보호법 시행령": ("개인정보 보호법 시행령",),
     "개인정보 보호법": ("개인정보 보호법(",),
     "표준 개인정보 보호지침": ("표준 개인정보 보호지침",),
@@ -52,18 +51,6 @@ def normalize_source_text(text: str) -> str:
     text = re.sub(r"\.(?:pdf|hwpx|hwp|txt)$", "", text, flags=re.IGNORECASE)
     text = re.sub(r"[\s\[\]★_+().,·ㆍ-]+", "", text)
     return text.casefold()
-
-
-def source_name_terms(name: str, source_path: str) -> list[str]:
-    terms = []
-    for value in (name, source_path):
-        normalized = normalize_source_text(value)
-        if len(normalized) >= SOURCE_NAME_MIN_LENGTH:
-            terms.append(normalized)
-        without_pdf_prefix = normalized.removeprefix("pdf")
-        if len(without_pdf_prefix) >= SOURCE_NAME_MIN_LENGTH:
-            terms.append(without_pdf_prefix)
-    return list(dict.fromkeys(terms))
 
 
 def source_name_overlap(
@@ -142,6 +129,11 @@ class SourceMatcher:
     def __init__(self, run_read):
         self._run_read = run_read
         self._document_records = None
+        self._alias_index = None
+
+    def invalidate(self) -> None:
+        self._document_records = None
+        self._alias_index = None
 
     def constraints(self, query: str) -> list[str]:
         aliases = [alias for alias in SOURCE_ALIASES if alias in query]
@@ -168,7 +160,7 @@ class SourceMatcher:
             return []
         records = self._documents()
         exact_matches = self._exact_source_matches(records, source_terms)
-        alias_matches = self._alias_matches(records, aliases)
+        alias_matches = self._alias_matches(aliases)
         case_content_matches = self._case_content_source_matches(case_terms)
         named_matches = (
             self._named_document_matches(records, normalize_source_text(query))
@@ -188,18 +180,28 @@ class SourceMatcher:
             )
         return self._document_records
 
-    def _alias_matches(self, records: list, aliases: list[str]) -> list[str]:
+    def _aliases(self) -> dict[str, list[str]]:
+        if self._alias_index is None:
+            index = {alias: [] for alias in SOURCE_ALIASES}
+            for record in self._documents():
+                name = record.get("name") or ""
+                source_path = record.get("source_path") or ""
+                for alias, targets in SOURCE_ALIASES.items():
+                    if any(target in name or target in source_path for target in targets):
+                        index[alias].append(source_path)
+            self._alias_index = {
+                alias: list(dict.fromkeys(source_paths))
+                for alias, source_paths in index.items()
+            }
+        return self._alias_index
+
+    def _alias_matches(self, aliases: list[str]) -> list[str]:
         if not aliases:
             return []
         matches = []
-        for record in records:
-            name = record.get("name") or ""
-            source_path = record.get("source_path") or ""
-            if any(
-                any(target in name or target in source_path for target in SOURCE_ALIASES[alias])
-                for alias in aliases
-            ):
-                matches.append(source_path)
+        alias_index = self._aliases()
+        for alias in aliases:
+            matches.extend(alias_index.get(alias, []))
         return list(dict.fromkeys(matches))
 
     def _exact_source_matches(

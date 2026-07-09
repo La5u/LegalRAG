@@ -9,8 +9,8 @@ from backend.constants import (
 )
 from backend.document import Document
 from backend.records import chunk_meta
-from backend.text import extract_tokens
-from backend.triples import CONCEPT_RELATION_TYPES, LEGAL_RELATIONS
+from backend.text import query_terms as normalized_query_terms
+from backend.triples import CONCEPT_RELATION_TYPES
 
 
 
@@ -52,18 +52,6 @@ class GraphFact:
     def content(self) -> str:
         return f"그래프 사실:\n{self.path}\n근거 문장: {self.sentence}"
 
-    def to_response(self) -> dict:
-        return {
-            "document": self.document,
-            "raw_document": self.document,
-            "chunk": self.chunk,
-            "article": self.article,
-            "relation": self.relation,
-            "path": self.path,
-            "sentence": self.sentence,
-            "score": self.score,
-        }
-
 
 def graph_facts(
     run_read,
@@ -74,13 +62,14 @@ def graph_facts(
     terms: list[str] | None = None,
 ) -> list[GraphFact]:
     chunk_ids = chunk_ids or [chunk.meta["id"] for chunk in chunks if chunk.meta.get("id")]
-    source_paths = source_paths or list(
-        dict.fromkeys(
-            chunk.meta["source_path"]
-            for chunk in chunks
-            if chunk.meta.get("source_path")
+    if source_paths is None:
+        source_paths = list(
+            dict.fromkeys(
+                chunk.meta["source_path"]
+                for chunk in chunks
+                if chunk.meta.get("source_path")
+            )
         )
-    )
     if terms is None:
         terms = query_terms(query)
     focus_article_numbers = list(
@@ -330,12 +319,11 @@ def _graph_definition_facts(
 
 
 def query_terms(query: str) -> list[str]:
-    return [
-        term
-        for term in extract_tokens(query)
-        if term.casefold() not in QUERY_STOP_TERMS
-        and term not in CONCEPT_STOP_TERMS
-    ][:8]
+    return normalized_query_terms(
+        query,
+        ignored_terms=QUERY_STOP_TERMS | CONCEPT_STOP_TERMS,
+        max_terms=8,
+    )
 
 
 def wants_definition(query: str) -> bool:

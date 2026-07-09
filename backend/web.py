@@ -10,7 +10,6 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.document_types import document_type_from_source_path
 from backend.rag import LegalRAG
 from backend.retrieval import RetrievalUnavailable
 from backend.routing import route_reason
@@ -75,8 +74,45 @@ def graph_fact_rows(chunks) -> list[dict]:
     rows = []
     for chunk in chunks:
         for fact in chunk.meta.get("graph_facts", []):
-            rows.append(fact.to_response())
+            rows.append(
+                {
+                    "document": fact.document,
+                    "raw_document": fact.document,
+                    "chunk": fact.chunk,
+                    "article": fact.article,
+                    "relation": fact.relation,
+                    "path": fact.path,
+                    "sentence": fact.sentence,
+                    "score": fact.score,
+                }
+            )
     return rows
+
+
+def source_rows(chunks) -> list[dict]:
+    return [
+        {
+            "document": chunk.meta.get("document_name", ""),
+            "raw_document": chunk.meta.get("document_name", ""),
+            "pdf_url": document_pdf_url(chunk.meta.get("source_path")),
+            "citation": citation_number,
+            "chunk": chunk.meta.get("chunk_number"),
+            "score": chunk.score,
+            "text": chunk.content,
+            "heading_path": chunk.meta.get("heading_path"),
+            "article": chunk.meta.get("article_number"),
+            "article_title": chunk.meta.get("article_title"),
+            "legal_unit_kind": chunk.meta.get("legal_unit_kind"),
+            "legal_unit_number": chunk.meta.get("legal_unit_number"),
+            "legal_unit_title": chunk.meta.get("legal_unit_title"),
+            "specific_citation": chunk.meta.get("specific_citation"),
+        }
+        for citation_number, chunk in enumerate(chunks, start=1)
+    ]
+
+
+def stream_event(event_type: str, **payload) -> str:
+    return json.dumps({"type": event_type, **payload}) + "\n"
 
 
 def add_trace_citations(
@@ -194,32 +230,14 @@ async def ask(
             None,
         )
         source_chunks = chunks
-        sources = [
-            {
-                "document": chunk.meta.get("document_name", ""),
-                "raw_document": chunk.meta.get("document_name", ""),
-                "pdf_url": document_pdf_url(chunk.meta.get("source_path")),
-                "citation": citation_number,
-                "chunk": chunk.meta.get("chunk_number"),
-                "score": chunk.score,
-                "text": chunk.content,
-                "heading_path": chunk.meta.get("heading_path"),
-                "article": chunk.meta.get("article_number"),
-                "article_title": chunk.meta.get("article_title"),
-                "legal_unit_kind": chunk.meta.get("legal_unit_kind"),
-                "legal_unit_number": chunk.meta.get("legal_unit_number"),
-                "legal_unit_title": chunk.meta.get("legal_unit_title"),
-                "specific_citation": chunk.meta.get("specific_citation"),
-            }
-            for citation_number, chunk in enumerate(source_chunks, start=1)
-        ]
+        sources = source_rows(source_chunks)
         graph_facts = graph_fact_rows(chunks)
         trace_payload = add_trace_citations(trace_payload, sources, request.category)
-        yield json.dumps({"type": "sources", "sources": sources}) + "\n"
+        yield stream_event("sources", sources=sources)
         if graph_facts:
-            yield json.dumps({"type": "graph_facts", "graph_facts": graph_facts}) + "\n"
+            yield stream_event("graph_facts", graph_facts=graph_facts)
         if trace_payload:
-            yield json.dumps({"type": "trace", "trace": trace_payload}) + "\n"
+            yield stream_event("trace", trace=trace_payload)
 
         tokens = asyncio.Queue()
 
@@ -246,13 +264,13 @@ async def ask(
                 if token is None:
                     break
                 if isinstance(token, Exception):
-                    yield json.dumps({"type": "error"}) + "\n"
+                    yield stream_event("error")
                     await generation
                     return
-                yield json.dumps({"type": "token", "text": token}) + "\n"
+                yield stream_event("token", text=token)
 
             await generation
-            yield json.dumps({"type": "done"}) + "\n"
+            yield stream_event("done")
         finally:
             if not generation.done():
                 generation.cancel()
