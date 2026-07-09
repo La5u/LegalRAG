@@ -1,7 +1,11 @@
-import pytest
-
 from backend.document import Document
-from backend.indexing import chunk_body, embedding_text, heading_path, structure_label
+from backend.indexing import (
+    chunk_body,
+    document_is_current,
+    embedding_text,
+    heading_path,
+    structure_label,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +155,22 @@ class TestEmbeddingText:
         text = "제15조의2 범위 이 법은 개인정보를 보호한다."
         result = embedding_text(text)
         assert result == "범위 이 법은 개인정보를 보호한다."
+
+
+# ---------------------------------------------------------------------------
+# document_is_current — compare stored index metadata without Neo4j warnings
+# ---------------------------------------------------------------------------
+class TestDocumentIsCurrent:
+    def test_reads_metadata_through_property_map(self):
+        captured = {}
+
+        def run_read(query, **params):
+            captured["query"] = query
+            captured["params"] = params
+            return [{"is_current": False}]
+
+        assert document_is_current(run_read, "documents/raw/test.pdf", 123) is False
+        assert "WITH properties(document) AS metadata" in captured["query"]
+        assert "document.mtime_ns" not in captured["query"]
+        assert captured["params"]["source_path"] == "documents/raw/test.pdf"
+        assert captured["params"]["source_mtime_ns"] == 123

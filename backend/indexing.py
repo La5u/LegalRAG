@@ -197,15 +197,15 @@ def document_is_current(run_read, source_path, source_mtime_ns):
     records = run_read(
         """
         MATCH (document:Document {source_path: $source_path})
-        WITH document
-        WHERE document.mtime_ns IS NOT NULL
-            AND document.embedding_model IS NOT NULL
-            AND document.chunking_version IS NOT NULL
-            AND document.max_words IS NOT NULL
-        RETURN document.mtime_ns = $source_mtime_ns
-            AND document.embedding_model = $embedding_model
-            AND document.chunking_version = $chunking_version
-            AND document.max_words = $max_words
+        WITH properties(document) AS metadata
+        WHERE metadata.mtime_ns IS NOT NULL
+            AND metadata.embedding_model IS NOT NULL
+            AND metadata.chunking_version IS NOT NULL
+            AND metadata.max_words IS NOT NULL
+        RETURN metadata.mtime_ns = $source_mtime_ns
+            AND metadata.embedding_model = $embedding_model
+            AND metadata.chunking_version = $chunking_version
+            AND metadata.max_words = $max_words
             AS is_current
         """,
         source_path=source_path,
