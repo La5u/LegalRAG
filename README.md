@@ -26,7 +26,7 @@ local LLM answer with citations
 
 - Linux
 - Python 3.11 or newer
-- Docker with Compose
+- Docker with Compose, or Podman with Compose
 - Neo4j 5.26 Community
 - Ollama
 
@@ -51,6 +51,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
+
+`requirements.txt` installs `torch` from the PyTorch CPU wheel index before
+`sentence-transformers`, which avoids pulling NVIDIA CUDA packages on CPU-only
+servers.
 
 Download local models once:
 
@@ -77,6 +81,14 @@ Lower-level commands:
 ```bash
 ./scripts/index
 ./scripts/dev
+```
+
+Use Podman for the local Neo4j container:
+
+```bash
+LEGALRAG_CONTAINER_ENGINE=podman ./scripts/index
+LEGALRAG_CONTAINER_ENGINE=podman ./scripts/dev
+LEGALRAG_CONTAINER_ENGINE=podman ./scripts/run
 ```
 
 The default embedding model is `intfloat/multilingual-e5-small`. Use the same
@@ -109,7 +121,7 @@ python -m evaluation.report --results /tmp/legalrag-eval/multilingual-e5-small_c
 
 ## Docker Hosting Workflow
 
-Docker is the deployment path, not the editing workflow. Keep working in this
+Docker or Podman is the deployment path, not the editing workflow. Keep working in this
 repository locally, test changes, commit them, then rebuild and restart the
 container on the server.
 
@@ -125,6 +137,14 @@ Typical server update:
 git pull
 sudo docker compose build app
 sudo docker compose up -d
+```
+
+Podman server update:
+
+```bash
+git pull
+podman compose build app
+podman compose up -d
 ```
 
 The running website uses the code copied into the Docker image at build time.
@@ -178,6 +198,12 @@ docker compose up -d neo4j
 ollama serve
 source .venv/bin/activate
 python -m uvicorn backend.web:app --host 127.0.0.1 --port 8000
+```
+
+With Podman, start Neo4j with:
+
+```bash
+podman compose up -d neo4j
 ```
 
 vLLM startup:
@@ -261,6 +287,9 @@ docker run --rm \
   alpine tar czf /backup/legalrag_neo4j_data.tar.gz -C /data .
 docker compose start neo4j
 ```
+
+With Podman, use `podman compose` and `podman run` for the same backup and
+restore commands.
 
 Restore that backup into the same volume:
 

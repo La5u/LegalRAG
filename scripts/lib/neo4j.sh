@@ -1,4 +1,25 @@
+container_engine() {
+  case "${LEGALRAG_CONTAINER_ENGINE:-docker}" in
+    docker | podman)
+      echo "${LEGALRAG_CONTAINER_ENGINE:-docker}"
+      ;;
+    *)
+      echo "LEGALRAG_CONTAINER_ENGINE must be docker or podman." >&2
+      return 2
+      ;;
+  esac
+}
+
+
 ensure_neo4j() {
+  local engine
+  engine="$(container_engine)"
+
+  if [[ "$engine" == "podman" ]]; then
+    podman compose up -d neo4j
+    return
+  fi
+
   if ! docker info >/dev/null 2>&1; then
     if command -v systemctl >/dev/null 2>&1; then
       sudo systemctl start docker

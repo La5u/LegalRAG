@@ -402,7 +402,8 @@ async def main() -> None:
     except ServiceUnavailable as error:
         raise SystemExit(
             "Neo4j is not reachable. Start it with `docker compose up -d neo4j` "
-            "and index documents before running evaluation."
+            "or `podman compose up -d neo4j`, then index documents before "
+            "running evaluation."
         ) from error
     print_summary(all_results)
     logger.info("Results written to %s", args.results)

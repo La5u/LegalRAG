@@ -1,6 +1,7 @@
 fastapi
 pydantic
 uvicorn[standard]
+torch --index-url https://download.pytorch.org/whl/cpu
 sentence-transformers>=2.2
 neo4j
 httpx
