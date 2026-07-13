@@ -13,6 +13,10 @@ def average(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def scored_values(rows: list[EvaluationResult]) -> list[float]:
+    return [row.score for row in rows if row.score is not None]
+
+
 def compact(text: str, limit: int = 120) -> str:
     text = " ".join(text.split()).replace("|", "\\|")
     return text if len(text) <= limit else f"{text[:limit - 3]}..."
@@ -29,17 +33,19 @@ def render_report(results: list[EvaluationResult]) -> str:
     lines = [
         "# Evaluation Results",
         "",
-        "| Strategy | Rows | Avg score | Avg source precision | Avg trace presence | Avg latency |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Strategy | Rows | Avg score | Document hit | Citation recall | MRR | Context precision | Avg latency |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for strategy, rows in sorted(grouped_by_strategy(results).items()):
         lines.append(
             "| "
             f"{strategy} | "
             f"{len(rows)} | "
-            f"{average([row.score for row in rows]):.3f} | "
+            f"{average(scored_values(rows)):.3f} | "
+            f"{average([row.document_hit for row in rows]):.3f} | "
+            f"{average([row.citation_recall for row in rows]):.3f} | "
+            f"{average([row.reciprocal_rank for row in rows]):.3f} | "
             f"{average([row.source_precision for row in rows]):.3f} | "
-            f"{average([row.symbolic_score for row in rows]):.3f} | "
             f"{average([row.latency for row in rows]):.2f}s |"
         )
 
@@ -52,7 +58,11 @@ def render_report(results: list[EvaluationResult]) -> str:
             "|---|---|---:|---:|---|---|",
         ]
     )
-    for result in sorted(results, key=lambda row: (row.score, row.source_precision))[:30]:
+    scored_results = [result for result in results if result.score is not None]
+    for result in sorted(
+        scored_results,
+        key=lambda row: (row.score, row.source_precision),
+    )[:30]:
         lines.append(
             "| "
             f"{result.id} | "

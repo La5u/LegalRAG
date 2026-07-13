@@ -12,6 +12,9 @@ OUTPUT_PATH = Path("evaluation/generated_candidates.jsonl")
 MIN_CHARS = 200
 
 ARTICLE_PATTERN = re.compile(r"제(\d+)조(?:의(\d+))?(?:\(([^)]*)\))?")
+STRONG_EXCEPTION_PATTERN = re.compile(
+    r"다만|그러하지\s+아니|제외(?:하고|한다|되는|하여)|예외|불구하고"
+)
 
 
 def short_name(path: Path) -> str:
@@ -80,7 +83,17 @@ def make_definition_question(
     if not term or len(term) < 2:
         return None
     question = f"{short_name(Path(source_path))}에서 '{term}'의 정의는 무엇인가요?"
-    answer_text = article["text"][:300] if article["text"] else f"{article['number']} 참조"
+    answer_text = next(
+        (
+            line.strip()
+            for line in article["text"].splitlines()
+            if term in line
+            and re.search(r"(?:이란|란|이라\s*함은|라\s*함은|말한다)", line)
+        ),
+        None,
+    )
+    if not answer_text:
+        return None
     return {
         "id": "",
         "source_path": source_path,
@@ -99,9 +112,19 @@ def make_obligation_question(
     article: dict, source_path: str, doc_type: str
 ) -> dict | None:
     text = article["text"]
-    if not text or "하여야" not in text:
+    if not text:
         return None
-    match = re.search(r"는\s*(.*?)(?:하여야|해야)", text[:200])
+    answer_text = next(
+        (
+            line.strip()
+            for line in text.splitlines()
+            if re.search(r"하여야\s*한다|해야\s*한다", line)
+        ),
+        None,
+    )
+    if not answer_text:
+        return None
+    match = re.search(r"는\s*(.*?)(?:하여야|해야)", answer_text[:200])
     subject = match.group(1)[-20:] if match else short_name(Path(source_path))
     question = f"{short_name(Path(source_path))} {article['number']}에 따라 {subject}의 의무는 무엇인가요?"
     return {
@@ -110,7 +133,7 @@ def make_obligation_question(
         "document_type": doc_type,
         "question_type": "obligation",
         "question": question,
-        "gold_answer": text[:300],
+        "gold_answer": answer_text,
         "gold_citations": [article["number"]],
         "evaluation_mode": "llm_judge",
         "difficulty": "medium",
@@ -147,7 +170,13 @@ def make_exception_question(
     article: dict, source_path: str, doc_type: str
 ) -> dict | None:
     text = article["text"]
-    if not text or "제외" not in text and "아니" not in text and "불구" not in text:
+    if not text:
+        return None
+    answer_text = next(
+        (line.strip() for line in text.splitlines() if STRONG_EXCEPTION_PATTERN.search(line)),
+        None,
+    )
+    if not answer_text:
         return None
     question = f"{short_name(Path(source_path))} {article['number']}에서 규정한 예외는 무엇인가요?"
     return {
@@ -156,7 +185,7 @@ def make_exception_question(
         "document_type": doc_type,
         "question_type": "exception",
         "question": question,
-        "gold_answer": text[:300],
+        "gold_answer": answer_text,
         "gold_citations": [article["number"]],
         "evaluation_mode": "llm_judge",
         "difficulty": "medium",
@@ -168,9 +197,19 @@ def make_prohibition_question(
     article: dict, source_path: str, doc_type: str
 ) -> dict | None:
     text = article["text"]
-    if not text or "아니" not in text and "금지" not in text:
+    if not text:
         return None
-    match = re.search(r"는\s*(.*?)(?:아니|금지)", text[:150])
+    answer_text = next(
+        (
+            line.strip()
+            for line in text.splitlines()
+            if re.search(r"금지|하여서는\s*아니|해서는\s*아니|할\s*수\s*없|무효", line)
+        ),
+        None,
+    )
+    if not answer_text:
+        return None
+    match = re.search(r"는\s*(.*?)(?:아니|금지)", answer_text[:150])
     subject = match.group(1)[-20:] if match else None
     if not subject:
         return None
@@ -181,7 +220,7 @@ def make_prohibition_question(
         "document_type": doc_type,
         "question_type": "prohibition",
         "question": question,
-        "gold_answer": text[:300],
+        "gold_answer": answer_text,
         "gold_citations": [article["number"]],
         "evaluation_mode": "llm_judge",
         "difficulty": "medium",
@@ -220,12 +259,10 @@ def find_defined_terms(text: str) -> list[str]:
 
 
 def generate_for_statute(
-    text: str, source_path: str
+    text: str, source_path: str, doc_type: str = "statute",
 ) -> list[dict]:
     items = []
     articles = extract_articles(text)
-    doc_type = "statute"
-
     seen_terms = set()
     for article in articles:
         if not article["text"]:
@@ -273,27 +310,32 @@ def generate_for_precedent(
     name = short_name(Path(source_path))
 
     lines = [l.strip() for l in text.split("\n") if l.strip()]
-    reason_start = -1
+    holding_start = -1
     for i, line in enumerate(lines):
-        if line == "이유" or line.startswith("이유"):
-            reason_start = i
+        if line.startswith(("판시사항", "판결요지")):
+            holding_start = i
             break
-    holding_text = "\n".join(lines[reason_start + 1 : reason_start + 6]) if reason_start >= 0 else text[:500]
+    holding_text = (
+        "\n".join(lines[holding_start + 1: holding_start + 6])
+        if holding_start >= 0
+        else ""
+    )
     case_id = Path(source_path).stem[:20]
 
-    q = {
-        "id": "",
-        "source_path": source_path,
-        "document_type": doc_type,
-        "question_type": "holding",
-        "question": f"대법원 {name} 판결의 주요 쟁점 또는 판시 사항은 무엇인가요?",
-        "gold_answer": holding_text[:400],
-        "gold_citations": [case_id],
-        "evaluation_mode": "llm_judge",
-        "difficulty": "hard",
-        "notes": f"Precedent holding question for {case_id}.",
-    }
-    items.append(q)
+    if holding_text:
+        q = {
+            "id": "",
+            "source_path": source_path,
+            "document_type": doc_type,
+            "question_type": "holding",
+            "question": f"대법원 {name} 판결의 주요 쟁점 또는 판시 사항은 무엇인가요?",
+            "gold_answer": holding_text,
+            "gold_citations": [case_id],
+            "evaluation_mode": "llm_judge",
+            "difficulty": "hard",
+            "notes": f"Precedent holding extracted from an explicit heading for {case_id}.",
+        }
+        items.append(q)
 
     if len(lines) > 10:
         q2 = {
@@ -316,7 +358,7 @@ def generate_for_precedent(
 def generate_for_regulation(
     text: str, source_path: str
 ) -> list[dict]:
-    return generate_for_statute(text, source_path)
+    return generate_for_statute(text, source_path, doc_type="regulation")
 
 
 def generate_for_guidance(
