@@ -6,6 +6,22 @@ from backend.document_types import document_type_from_source_path
 
 
 SOURCE_ALIASES = {
+    "국세기본법": ("국세기본법",),
+    "근로기준법": ("근로기준법",),
+    "노동조합법": ("노동조합 및 노동관계조정법",),
+    "노동조합 및 노동관계조정법": ("노동조합 및 노동관계조정법",),
+    "상가임대차법 시행령": ("상가건물 임대차보호법 시행령",),
+    "상가건물 임대차보호법 시행령": ("상가건물 임대차보호법 시행령",),
+    "상가임대차법": ("상가건물 임대차보호법(",),
+    "상가건물 임대차보호법": ("상가건물 임대차보호법(",),
+    "상가 임대차": ("상가건물 임대차보호법(",),
+    "상법": ("상법(",),
+    "전자상거래법": ("전자상거래 등에서의 소비자보호에 관한 법률",),
+    "주택임대차보호법": ("주택임대차보호법",),
+    "주택임대차": ("주택임대차보호법",),
+    "임차주택": ("주택임대차보호법",),
+    "행정소송법": ("행정소송법",),
+    "행정심판법": ("행정심판법",),
     "민법": ("민법(",),
     "형법": ("형법(",),
     "약관법": ("약관의 규제에 관한 법률",),
@@ -137,6 +153,14 @@ class SourceMatcher:
 
     def constraints(self, query: str) -> list[str]:
         aliases = [alias for alias in SOURCE_ALIASES if alias in query]
+        aliases = [
+            alias for alias in aliases
+            if not any(alias != other and alias in other for other in aliases)
+        ]
+        if "상가임대차법 시행령" in aliases:
+            aliases = ["상가임대차법 시행령"]
+        elif "상가건물 임대차보호법 시행령" in aliases:
+            aliases = ["상가건물 임대차보호법 시행령"]
         if "표준 개인정보 보호지침" in aliases:
             aliases = ["표준 개인정보 보호지침"]
         elif "개인정보 보호법 시행령" in aliases:
@@ -156,26 +180,72 @@ class SourceMatcher:
             or bool(case_terms)
             or any(term in query for term in DOCUMENT_SUMMARY_TERMS | CASE_TERMS | CONTRACT_TERMS)
         )
+        records = self._documents()
+        normalized_query = normalize_source_text(query)
+        embedded_names = []
+        for record in records:
+            source_path = record.get("source_path") or ""
+            names = {
+                normalize_source_text(record.get("title") or ""),
+                normalize_source_text(record.get("name") or ""),
+                normalize_source_text(Path(source_path).stem),
+            }
+            longest_match = max(
+                (
+                    name for name in names
+                    if len(name) >= SOURCE_NAME_MIN_LENGTH and name in normalized_query
+                ),
+                key=len,
+                default="",
+            )
+            if longest_match:
+                embedded_names.append((len(longest_match), source_path))
+        if embedded_names:
+            best_length = max(length for length, _path in embedded_names)
+            return list(dict.fromkeys(
+                path for length, path in embedded_names if length == best_length
+            ))
         if not aliases and not source_terms and not case_terms and not allow_named_overlap:
             return []
-        records = self._documents()
         exact_matches = self._exact_source_matches(records, source_terms)
         alias_matches = self._alias_matches(aliases)
         case_content_matches = self._case_content_source_matches(case_terms)
+        direct_matches = list(dict.fromkeys(
+            exact_matches + alias_matches + case_content_matches
+        ))
+        if direct_matches:
+            return direct_matches
         named_matches = (
-            self._named_document_matches(records, normalize_source_text(query))
+            self._named_document_matches(records, normalized_query)
             if allow_named_overlap
             else []
         )
-        matched = list(dict.fromkeys(exact_matches + alias_matches + case_content_matches + named_matches))
-        return matched or []
+        return named_matches or []
+
+    def category_constraints(self, category: str | None) -> list[str]:
+        """Return indexed source paths in one requested document category."""
+        if not category or category in {"all", "auto"}:
+            return []
+        return [
+            record["source_path"]
+            for record in self._documents()
+            if (
+                record.get("document_type")
+                or document_type_from_source_path(record.get("source_path") or "")
+            ) == category
+        ]
 
     def _documents(self) -> list:
         if self._document_records is None:
             self._document_records = self._run_read(
                 """
                 MATCH (document:Document)
-                RETURN document.source_path AS source_path, document.name AS name
+                RETURN document.source_path AS source_path,
+                    document.name AS name,
+                    document.title AS title,
+                    document.document_type AS document_type,
+                    document.logical_id AS logical_id,
+                    document.version_label AS version_label
                 """
             )
         return self._document_records
@@ -184,7 +254,7 @@ class SourceMatcher:
         if self._alias_index is None:
             index = {alias: [] for alias in SOURCE_ALIASES}
             for record in self._documents():
-                name = record.get("name") or ""
+                name = record.get("title") or record.get("name") or ""
                 source_path = record.get("source_path") or ""
                 for alias, targets in SOURCE_ALIASES.items():
                     if any(target in name or target in source_path for target in targets):
@@ -219,6 +289,7 @@ class SourceMatcher:
             name = record.get("name") or ""
             source_path = record.get("source_path") or ""
             normalized_sources = [
+                normalize_source_text(record.get("title") or ""),
                 normalize_source_text(name),
                 normalize_source_text(Path(source_path).name),
                 normalize_source_text(source_path),

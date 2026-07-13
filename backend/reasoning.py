@@ -1,4 +1,5 @@
 from backend.document import Document
+from backend.privacy_checklist import privacy_checklist
 from backend.routing import classify_query
 from backend.text import query_terms
 
@@ -42,7 +43,7 @@ def build_symbolic_trace(query: str, evidence: list[Document]) -> dict:
         condition_facts,
     )
 
-    return {
+    trace = {
         "query_type": route.kind,
         "summary": trace_summary(route.kind, conclusion, evidence),
         "important_evidence": important_evidence(
@@ -73,55 +74,16 @@ def build_symbolic_trace(query: str, evidence: list[Document]) -> dict:
         ),
         "conclusion": conclusion,
     }
-
-
-def symbolic_prompt(trace: dict | None) -> str | None:
-    if not trace:
-        return None
-
-    conclusion = trace.get("conclusion", {})
-    lines = [
-        "상징 추론 제약:",
-        f"- 질문 유형: {trace.get('query_type')}",
-        f"- 필요한 답변 유형: {conclusion.get('answer_type')}",
-        f"- 이유: {conclusion.get('reason')}",
-    ]
-    citations = [
-        item.get("citation")
-        for item in trace.get("important_evidence", [])
-        if item.get("citation")
-    ]
-    if citations:
-        lines.append(f"- 다음 근거 인용을 우선 사용하세요: {', '.join(citations)}")
-    lines.append(
-        "- 이 제약이 약한 문맥과 충돌하면 이 제약을 우선 따르세요."
-    )
-    return "\n".join(lines)
-
-
-def prioritize_symbolic_evidence(
-    evidence: list[Document],
-    trace: dict | None,
-) -> list[Document]:
-    if not trace:
-        return evidence
-
-    important_keys = {
-        (item.get("document"), item.get("chunk"))
-        for item in trace.get("important_evidence", [])
-    }
-    if not important_keys:
-        return evidence
-
-    important = []
-    remaining = []
-    for document in evidence:
-        key = (document.meta.get("document_name"), document.meta.get("chunk_number"))
-        if key in important_keys:
-            important.append(document)
-        else:
-            remaining.append(document)
-    return important + remaining
+    checklist = privacy_checklist(query, evidence)
+    if checklist:
+        trace["workflow"] = checklist["workflow"]
+        trace["privacy_checklist"] = checklist["checks"]
+        trace["missing_facts"] = checklist["missing_facts"]
+        trace["conclusion"] = {
+            "answer_type": checklist["result"],
+            "reason": "필수 쟁점의 근거와 누락 정보를 확인했습니다.",
+        }
+    return trace
 
 
 def trace_summary(query_type: str, conclusion: dict, evidence: list[Document]) -> list[str]:
@@ -161,7 +123,7 @@ def important_evidence(
         selected = [
             document
             for document in evidence
-            if not document.content.startswith(("Graph fact:", "그래프 사실:"))
+            if not document.content.startswith(("Graph fact:", "그래프 사실:", "그래프 관계 후보:"))
         ][:3]
     selected = unique_documents(selected)
     return trace_items(selected, limit=6)
@@ -184,12 +146,12 @@ def categorize_evidence(query: str, evidence: list[Document]) -> dict[str, list[
     graph_facts = [
         document
         for document in evidence
-        if document.content.startswith(("Graph fact:", "그래프 사실:"))
+        if document.content.startswith(("Graph fact:", "그래프 사실:", "그래프 관계 후보:"))
     ]
     text_facts = [
         document
         for document in evidence
-        if not document.content.startswith(("Graph fact:", "그래프 사실:"))
+        if not document.content.startswith(("Graph fact:", "그래프 사실:", "그래프 관계 후보:"))
     ]
     categories = {
         "definitions": [
@@ -437,7 +399,7 @@ def matched_terms(query: str) -> list[str]:
 def supporting_chunks(evidence: list[Document], limit: int) -> list[str]:
     chunks = []
     for document in evidence:
-        if document.content.startswith(("Graph fact:", "그래프 사실:")):
+        if document.content.startswith(("Graph fact:", "그래프 사실:", "그래프 관계 후보:")):
             continue
         label = f"{document.meta.get('document_name')}#{document.meta.get('chunk_number')}"
         chunks.append(label)

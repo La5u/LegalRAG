@@ -29,6 +29,7 @@ class GraphFact:
     article: str | None = None
     legal_unit_id: str | None = None
     case_number: str | None = None
+    definition_term: str | None = None
 
     def to_document(self) -> Document:
         return Document(
@@ -44,13 +45,15 @@ class GraphFact:
                 article_number=self.article,
                 graph_relation=self.relation,
                 case_number=self.case_number,
+                evidence_type="graph_fact",
+                definition_term=self.definition_term,
             ),
             score=self.score,
         )
 
     @property
     def content(self) -> str:
-        return f"그래프 사실:\n{self.path}\n근거 문장: {self.sentence}"
+        return f"그래프 관계 후보:\n{self.path}\n근거 문장: {self.sentence}"
 
 
 def graph_facts(
@@ -152,7 +155,7 @@ def _case_holding_facts(
             id=f"{GRAPH_FACT_ID_PREFIX}HAS_HOLDING::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
-            chunk=f"graph-case-{index}",
+            chunk=record["chunk_number"],
             relation="HAS_HOLDING",
             path=f"{record['case_number']} -HAS_HOLDING-> Holding",
             sentence=record["text"],
@@ -168,7 +171,7 @@ def _graph_relation_facts(
     query: str,
     chunk_ids: list[str],
     source_paths: list[str],
-    _terms: list[str],
+    terms: list[str],
     focus_article_numbers: list[str],
 ) -> list[GraphFact]:
     relation_records = run_read(
@@ -203,8 +206,14 @@ def _graph_relation_facts(
                 WHEN target.name IN $article_terms THEN 0
                 WHEN article.number IN $article_terms THEN 0
                 ELSE 1
-            END AS article_priority
-        ORDER BY relation_priority, article_priority, relation.chunk_number
+            END AS article_priority,
+            CASE
+                WHEN any(term IN $terms WHERE source.name CONTAINS term
+                    OR target.name CONTAINS term
+                    OR relation.sentence CONTAINS term)
+                THEN 0 ELSE 1
+            END AS term_priority
+        ORDER BY relation_priority, article_priority, term_priority, relation.chunk_number
         RETURN
             source.name AS source,
             type(relation) AS relation,
@@ -224,6 +233,7 @@ def _graph_relation_facts(
         preferred_relations=preferred_relations(query),
         concept_stop_terms=CONCEPT_STOP_TERMS_LIST,
         article_terms=article_terms(query),
+        terms=terms,
         chunk_ids=chunk_ids,
         source_paths=list(dict.fromkeys(source_paths)),
         article_numbers=focus_article_numbers,
@@ -235,7 +245,7 @@ def _graph_relation_facts(
             id=f"{GRAPH_FACT_ID_PREFIX}{record['relation']}::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
-            chunk=f"graph-{index}",
+            chunk=record["chunk_number"],
             relation=record["relation"],
             path=(
                 (f"[{record['article_number']}] " if record.get("article_number") else "")
@@ -303,7 +313,7 @@ def _graph_definition_facts(
             id=f"{GRAPH_FACT_ID_PREFIX}DEFINED_AS::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
-            chunk=f"graph-definition-{index}",
+            chunk=record["chunk_number"],
             relation="DEFINED_AS",
             path=(
                 (f"[{record['article_number']}] " if record.get("article_number") else "")
@@ -313,6 +323,7 @@ def _graph_definition_facts(
             score=0.9 - index * 0.001,
             article=record.get("article_number"),
             legal_unit_id=record.get("article_id"),
+            definition_term=record["term"],
         )
         for index, record in enumerate(definition_records, start=1)
     ]

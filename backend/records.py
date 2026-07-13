@@ -11,12 +11,22 @@ CHUNK_FIELDS = (
     "part",
     "source_path",
 )
+CHUNK_METADATA_FIELDS = (
+    "document_title",
+    "logical_id",
+    "version_label",
+    "effective_date",
+    "document_type",
+    "source_url",
+    "pdf_path",
+    "page_number",
+)
 
 
 def chunk_return_fields(alias: str, score: str, rank: str | None = None) -> str:
     fields = [
         f"{alias}.{field} AS {field}"
-        for field in CHUNK_FIELDS
+        for field in (*CHUNK_FIELDS, *CHUNK_METADATA_FIELDS)
     ]
     fields.append(f"{score} AS score")
     if rank:
@@ -27,7 +37,7 @@ def chunk_return_fields(alias: str, score: str, rank: str | None = None) -> str:
 def chunk_meta(**overrides) -> dict:
     meta = {
         field: None
-        for field in CHUNK_FIELDS
+        for field in (*CHUNK_FIELDS, *CHUNK_METADATA_FIELDS)
         if field != "content"
     }
     meta.update(overrides)
@@ -50,8 +60,9 @@ def document_from_record(record) -> Document:
         meta=chunk_meta(
             **{
                 field: record[field]
-                for field in CHUNK_FIELDS
+                for field in (*CHUNK_FIELDS, *CHUNK_METADATA_FIELDS)
                 if field != "content"
+                and field in record_keys
             }
         ),
         score=record.get("score"),

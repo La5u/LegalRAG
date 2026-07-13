@@ -20,6 +20,8 @@ class Definition:
     term: str
     text: str
     chunk_number: int
+    source_path: str
+    document_name: str
     article_number: str | None
     article_title: str | None
 
@@ -55,6 +57,8 @@ def extract_definitions(chunks: list[Document]) -> list[Definition]:
                     term=term.strip(),
                     text=chunk.content[match.start():next_match_start].strip(),
                     chunk_number=chunk.meta["chunk_number"],
+                    source_path=chunk.meta.get("source_path", ""),
+                    document_name=chunk.meta.get("document_name", ""),
                     article_number=chunk.meta.get("article_number"),
                     article_title=chunk.meta.get("article_title"),
                 )

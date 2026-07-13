@@ -66,6 +66,17 @@ class TestClassifyQuery:
         assert route.kind == "article_lookup"
         assert "제15조" in route.article_numbers
 
+    def test_combined_article_and_exception_intent(self):
+        route = classify_query("민법 제5조의 예외와 적용 조건은?")
+        assert route.kind == "exception"
+        assert route.tasks == ["article_lookup", "exception", "condition"]
+        assert route.article_numbers == ["제5조"]
+
+    def test_parent_act_cross_reference_is_not_target_article(self):
+        route = classify_query("형사소송규칙에서 법 제6조에 따른 신청 방법은?")
+
+        assert route.article_numbers == []
+
 
 # ---------------------------------------------------------------------------
 # classify_document_category
@@ -168,7 +179,6 @@ class TestQueryRoute:
         assert route.document_category is None
         assert route.article_numbers == []
         assert route.search_terms == []
-        assert route.include_graph_facts is True
 
     def test_frozen(self):
         route = QueryRoute(kind="definition")

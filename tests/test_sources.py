@@ -38,6 +38,60 @@ class TestNormalizeSourceText:
         assert result == "helloworldtest"
 
 
+def test_new_law_alias_targets_statute_not_similar_contract():
+    records = [
+        {
+            "name": "상가건물 임대차보호법(법률)",
+            "source_path": "documents/raw/statutes/상가건물 임대차보호법(법률).hwpx",
+        },
+        {
+            "name": "상가건물 임대차 표준계약서",
+            "source_path": "documents/raw/contracts/상가건물 임대차 표준계약서.pdf",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("상가임대차법의 갱신 요건") == [
+        "documents/raw/statutes/상가건물 임대차보호법(법률).hwpx"
+    ]
+
+
+def test_longest_source_alias_keeps_explicit_standard_contract():
+    records = [
+        {
+            "name": "주택임대차보호법(법률)",
+            "source_path": "documents/raw/statutes/주택임대차보호법(법률).hwpx",
+        },
+        {
+            "name": "주택임대차 표준계약서",
+            "source_path": "documents/raw/contracts/주택임대차 표준계약서.pdf",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("주택임대차 표준계약서의 임대인 의무") == [
+        "documents/raw/contracts/주택임대차 표준계약서.pdf"
+    ]
+
+
+def test_full_decree_name_overrides_shorter_act_alias():
+    records = [
+        {
+            "name": "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법",
+            "source_path": "documents/raw/statutes/인공지능 기본법.hwpx",
+        },
+        {
+            "name": "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법 시행령",
+            "source_path": "documents/raw/regulations/인공지능 기본법 시행령.hwpx",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints(
+        "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법 시행령에 따르면"
+    ) == ["documents/raw/regulations/인공지능 기본법 시행령.hwpx"]
+
+
 # ---------------------------------------------------------------------------
 # source_name_overlap — check if query matches document name
 # ---------------------------------------------------------------------------
@@ -142,6 +196,44 @@ class TestIsCaseQuery:
 # SourceMatcher — cached source constraints
 # ---------------------------------------------------------------------------
 class TestSourceMatcher:
+    def test_exact_alias_does_not_expand_to_similarly_named_contracts(self):
+        records = [
+            {
+                "name": "주택임대차 표준계약서(원본게시용).pdf",
+                "source_path": "documents/raw/contracts/주택임대차 표준계약서(원본게시용).pdf",
+            },
+            {
+                "name": "상가건물_임대차_표준계약서.pdf",
+                "source_path": "documents/raw/contracts/상가건물_임대차_표준계약서.pdf",
+            },
+        ]
+        matcher = SourceMatcher(lambda _query, **_parameters: records)
+
+        matches = matcher.constraints(
+            "주택임대차 표준계약서에서 임차인은 언제 차임을 지급하나요?"
+        )
+
+        assert matches == [
+            "documents/raw/contracts/주택임대차 표준계약서(원본게시용).pdf"
+        ]
+
+    def test_category_constraints_use_indexed_source_types(self):
+        records = [
+            {
+                "name": "법.pdf",
+                "source_path": "documents/raw/statutes/법.pdf",
+            },
+            {
+                "name": "판례.pdf",
+                "source_path": "documents/raw/precedents/판례.pdf",
+            },
+        ]
+        matcher = SourceMatcher(lambda _query, **_parameters: records)
+
+        assert matcher.category_constraints("statute") == [
+            "documents/raw/statutes/법.pdf"
+        ]
+
     def test_invalidate_refreshes_document_index(self):
         records = [
             [

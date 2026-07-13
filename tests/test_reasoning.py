@@ -2,8 +2,6 @@ from backend.document import Document
 from backend.reasoning import (
     build_symbolic_trace,
     classify_conclusion,
-    prioritize_symbolic_evidence,
-    symbolic_prompt,
 )
 
 
@@ -36,35 +34,10 @@ def test_build_symbolic_trace_prioritizes_legal_signals():
     assert trace["conclusion"]["answer_type"] in {"yes", "conditional"}
 
 
-def test_symbolic_prompt_mentions_conclusion_and_citations():
-    trace = {
-        "query_type": "obligation",
-        "important_evidence": [{"citation": "1"}],
-        "conclusion": {"answer_type": "yes", "reason": "obligation evidence"},
-    }
-
-    prompt = symbolic_prompt(trace)
-
-    assert prompt is not None
-    assert "obligation" in prompt
-    assert "yes" in prompt
-    assert "1" in prompt
-
-
-def test_prioritize_symbolic_evidence_moves_important_chunks_first():
-    chunks = [
-        Document("ordinary", {"document_name": "법.hwpx", "chunk_number": 1}),
-        Document("important", {"document_name": "법.hwpx", "chunk_number": 2}),
-    ]
-    trace = {
-        "important_evidence": [
-            {"document": "법.hwpx", "chunk": 2},
-        ],
-    }
-
-    prioritized = prioritize_symbolic_evidence(chunks, trace)
-
-    assert prioritized[0].content == "important"
+def test_privacy_trace_refuses_conclusion_when_rules_are_missing():
+    trace = build_symbolic_trace("개인정보를 국외 이전해도 되나요?", [])
+    assert trace["workflow"] == "privacy_compliance"
+    assert trace["conclusion"]["answer_type"] == "needs_facts"
 
 
 def test_classify_conclusion_core_answer_types():

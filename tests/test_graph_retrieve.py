@@ -143,7 +143,7 @@ class TestGraphFact:
             sentence="개인정보처리자는 정보주체에게 통지하여야 한다.",
             score=0.95,
         )
-        assert "그래프 사실:" in fact.content
+        assert "그래프 관계 후보:" in fact.content
         assert "MUST_NOTIFY" in fact.content
         assert "개인정보처리자는 정보주체에게 통지하여야 한다." in fact.content
 
@@ -163,4 +163,5 @@ class TestGraphFact:
         assert doc.content == fact.content
         assert doc.meta["article_number"] == "제15조"
         assert doc.meta["graph_relation"] == "MUST_NOTIFY"
+        assert doc.meta["evidence_type"] == "graph_fact"
         assert doc.score == 0.95
