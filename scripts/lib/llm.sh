@@ -7,6 +7,9 @@ ensure_llm() {
     wait_vllm "$python"
     return
   fi
+  if [[ "$provider" == "openai_compatible" ]]; then
+    return
+  fi
 
   ensure_ollama "$python" "$ollama_log"
   wait_ollama_model "$python"

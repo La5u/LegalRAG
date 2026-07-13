@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -5,7 +6,10 @@ import httpx
 
 from backend.config import (
     CONTEXT_WINDOW,
+    GENERATION_SEED,
     GENERATION_MODEL,
+    LLM_API_KEY,
+    LLM_BASE_URL,
     LLM_PROVIDER,
     MAX_OUTPUT_TOKENS,
     OLLAMA_KEEP_ALIVE,
@@ -17,6 +21,23 @@ from backend.config import (
 
 
 logger = logging.getLogger(__name__)
+_http_client: httpx.AsyncClient | None = None
+
+
+def http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(600, connect=15),
+        )
+    return _http_client
+
+
+async def close_http_client() -> None:
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+    _http_client = None
 
 
 def messages(
@@ -60,6 +81,7 @@ def payload(
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "temperature": TEMPERATURE,
+            "seed": GENERATION_SEED,
             "num_ctx": CONTEXT_WINDOW,
             "num_predict": MAX_OUTPUT_TOKENS,
         },
@@ -73,13 +95,15 @@ def vllm_payload(
     query: str,
     context: str,
     symbolic_context: str | None = None,
+    max_tokens: int = MAX_OUTPUT_TOKENS,
 ) -> dict:
     return {
         "model": GENERATION_MODEL,
         "messages": messages(query, context, symbolic_context),
         "stream": True,
         "temperature": TEMPERATURE,
-        "max_tokens": MAX_OUTPUT_TOKENS,
+        "seed": GENERATION_SEED,
+        "max_tokens": max_tokens,
     }
 
 
@@ -89,20 +113,65 @@ async def stream_answer(
     callback,
     symbolic_context: str | None = None,
 ) -> None:
-    if LLM_PROVIDER == "vllm":
+    if LLM_PROVIDER in {"vllm", "openai_compatible"}:
+        base_url = VLLM_URL if LLM_PROVIDER == "vllm" else LLM_BASE_URL
+        if not base_url:
+            raise ValueError("LEGALRAG_LLM_BASE_URL is required")
+        headers = (
+            {"Authorization": f"Bearer {LLM_API_KEY}"}
+            if LLM_API_KEY
+            else None
+        )
+        final_text_seen = False
+
+        async def track_final_text(token):
+            nonlocal final_text_seen
+            final_text_seen = True
+            await callback(token)
+
+        request = vllm_payload(
+            query, context, symbolic_context=symbolic_context,
+        )
         try:
-            await stream_vllm_payload(
-                vllm_payload(query, context, symbolic_context=symbolic_context),
-                callback,
+            await stream_openai_compatible_payload(
+                request, track_final_text, base_url, headers,
             )
-        except httpx.HTTPError as error:
-            logger.exception("vLLM request failed.")
-            await callback(f"\n[Generation error: {error}]\n")
+        except (httpx.TransportError, httpx.HTTPStatusError) as error:
+            if final_text_seen:
+                raise
+            if (
+                isinstance(error, httpx.HTTPStatusError)
+                and error.response.status_code not in {429, 502, 503, 504}
+            ):
+                raise
+            logger.warning(
+                "Hosted model stream failed before returning text; retrying.",
+                exc_info=True,
+            )
+            retry_after = (
+                error.response.headers.get("retry-after")
+                if isinstance(error, httpx.HTTPStatusError)
+                else None
+            )
+            await asyncio.sleep(min(float(retry_after or 0), 2.0))
+        if not final_text_seen and LLM_PROVIDER == "openai_compatible":
+            logger.warning(
+                "Hosted model emitted no final text; retrying with a larger output budget."
+            )
+            retry_request = dict(request)
+            retry_request["max_tokens"] = MAX_OUTPUT_TOKENS * 2
+            await stream_openai_compatible_payload(
+                retry_request, track_final_text, base_url, headers,
+            )
+            if not final_text_seen:
+                await callback(
+                    "호스팅된 언어 모델이 최종 답변을 생성하지 못했습니다. "
+                    "같은 검색 결과로 다시 시도해 주세요."
+                )
         return
 
     if LLM_PROVIDER != "ollama":
-        await callback(f"\n[Generation error: unknown LLM provider {LLM_PROVIDER!r}]\n")
-        return
+        raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER!r}")
 
     try:
         await stream_payload(
@@ -112,25 +181,17 @@ async def stream_answer(
     except httpx.HTTPStatusError as error:
         if error.response.status_code == 400:
             logger.warning("Ollama rejected the think option; retrying without it.")
-            try:
-                await stream_payload(
-                    payload(
-                        query,
-                        context,
-                        include_think=False,
-                        symbolic_context=symbolic_context,
-                    ),
-                    callback,
-                )
-            except httpx.HTTPError as retry_error:
-                logger.exception("Ollama retry failed.")
-                await callback(f"\n[Generation error: {retry_error}]\n")
+            await stream_payload(
+                payload(
+                    query,
+                    context,
+                    include_think=False,
+                    symbolic_context=symbolic_context,
+                ),
+                callback,
+            )
             return
-        logger.exception("Ollama request failed.")
-        await callback(f"\n[Generation error: {error}]\n")
-    except httpx.HTTPError as error:
-        logger.exception("Ollama request failed.")
-        await callback(f"\n[Generation error: {error}]\n")
+        raise
 
 
 async def stream_payload(request: dict, callback) -> None:
@@ -143,13 +204,46 @@ async def stream_payload(request: dict, callback) -> None:
     )
 
 
-async def stream_vllm_payload(request: dict, callback) -> None:
+async def stream_model_payload(request: dict, callback) -> None:
+    """Stream an arbitrary chat request through the configured provider.
+
+    Unlike :func:`stream_answer`, this accepts a complete request so callers
+    such as the evaluator can select a separate judge model.
+    """
+    if LLM_PROVIDER == "ollama":
+        await stream_payload(request, callback)
+        return
+    if LLM_PROVIDER not in {"vllm", "openai_compatible"}:
+        raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER!r}")
+
+    hosted_request = dict(request)
+    options = hosted_request.pop("options", {})
+    hosted_request.pop("keep_alive", None)
+    hosted_request.pop("think", None)
+    hosted_request["max_tokens"] = options.get("num_predict", MAX_OUTPUT_TOKENS)
+    hosted_request["temperature"] = options.get("temperature", TEMPERATURE)
+    base_url = VLLM_URL if LLM_PROVIDER == "vllm" else LLM_BASE_URL
+    if not base_url:
+        raise ValueError("LEGALRAG_LLM_BASE_URL is required")
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else None
+    await stream_openai_compatible_payload(
+        hosted_request, callback, base_url, headers,
+    )
+
+
+async def stream_openai_compatible_payload(
+    request: dict,
+    callback,
+    base_url: str,
+    headers: dict | None = None,
+) -> None:
     await stream_json_tokens(
-        f"{VLLM_URL}/v1/chat/completions",
+        f"{base_url}/chat/completions",
         request,
         callback,
         parse_vllm_line,
         token_from_vllm_event,
+        headers=headers,
     )
 
 
@@ -159,23 +253,24 @@ async def stream_json_tokens(
     callback,
     parse_line,
     token_from_event,
+    headers: dict | None = None,
 ) -> None:
-    async with httpx.AsyncClient(timeout=600) as client:
-        async with client.stream(
-            "POST",
-            url,
-            json=request,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                event = parse_line(line)
-                if event is None:
-                    continue
-                if event == "[DONE]":
-                    break
-                token = token_from_event(event)
-                if token:
-                    await callback(token)
+    async with http_client().stream(
+        "POST",
+        url,
+        json=request,
+        headers=headers,
+    ) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            event = parse_line(line)
+            if event is None:
+                continue
+            if event == "[DONE]":
+                break
+            token = token_from_event(event)
+            if token:
+                await callback(token)
 
 
 def parse_ollama_line(line: str):

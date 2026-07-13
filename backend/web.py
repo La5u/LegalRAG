@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
@@ -11,6 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.rag import LegalRAG
+from backend.llm import close_http_client
 from backend.retrieval import RetrievalUnavailable
 from backend.routing import route_reason
 
@@ -29,11 +29,6 @@ CATEGORIES = [
 ]
 
 
-def _normalized_document_stem(path: Path) -> str:
-    stem = re.sub(r"\([^)]*\)", "", path.stem).strip()
-    return stem.casefold()
-
-
 def _safe_raw_document_path(source_path: str) -> Path | None:
     path = (PROJECT_ROOT / source_path).resolve()
     try:
@@ -43,58 +38,56 @@ def _safe_raw_document_path(source_path: str) -> Path | None:
     return path
 
 
-def _matching_pdf_path(path: Path) -> Path | None:
-    if path.suffix.lower() == ".pdf" and path.exists():
-        return path
-
-    normalized_stem = _normalized_document_stem(path)
-    for candidate in path.parent.glob("*.pdf"):
-        if _normalized_document_stem(candidate) == normalized_stem:
-            return candidate
-    return None
-
-
-def document_pdf_url(source_path: str | None) -> str | None:
-    if not source_path:
+def document_pdf_url(
+    source_path: str | None, pdf_path: str | None = None,
+) -> str | None:
+    selected_path = pdf_path
+    if not selected_path and source_path and source_path.casefold().endswith(".pdf"):
+        selected_path = source_path
+    if not selected_path:
         return None
 
-    path = _safe_raw_document_path(source_path)
+    path = _safe_raw_document_path(selected_path)
     if path is None:
         return None
 
-    pdf_path = _matching_pdf_path(path)
-    if pdf_path is None:
+    if path.suffix.casefold() != ".pdf" or not path.is_file():
         return None
 
-    relative_path = pdf_path.relative_to(RAW_DOCUMENTS_PATH).as_posix()
-    return f"/documents/raw/{quote(relative_path, safe='/')}"
+    relative_path = path.relative_to(RAW_DOCUMENTS_PATH).as_posix()
+    # A relative URL works both at the local root and behind a /legal-rag proxy.
+    return f"documents/raw/{quote(relative_path, safe='/')}"
 
 
-def graph_fact_rows(chunks) -> list[dict]:
-    rows = []
-    for chunk in chunks:
-        for fact in chunk.meta.get("graph_facts", []):
-            rows.append(
-                {
-                    "document": fact.document,
-                    "raw_document": fact.document,
-                    "chunk": fact.chunk,
-                    "article": fact.article,
-                    "relation": fact.relation,
-                    "path": fact.path,
-                    "sentence": fact.sentence,
-                    "score": fact.score,
-                }
-            )
-    return rows
+def graph_fact_rows(facts) -> list[dict]:
+    return [
+        {
+            "document": fact.document,
+            "raw_document": fact.source_path,
+            "chunk": fact.chunk,
+            "article": fact.article,
+            "relation": fact.relation,
+            "path": fact.path,
+            "sentence": fact.sentence,
+            "score": fact.score,
+        }
+        for fact in facts
+    ]
 
 
 def source_rows(chunks) -> list[dict]:
     return [
         {
             "document": chunk.meta.get("document_name", ""),
-            "raw_document": chunk.meta.get("document_name", ""),
-            "pdf_url": document_pdf_url(chunk.meta.get("source_path")),
+            "raw_document": chunk.meta.get("source_path", ""),
+            "document_title": chunk.meta.get("document_title"),
+            "version_label": chunk.meta.get("version_label"),
+            "document_type": chunk.meta.get("document_type"),
+            "source_url": chunk.meta.get("source_url"),
+            "page_number": chunk.meta.get("page_number"),
+            "pdf_url": document_pdf_url(
+                chunk.meta.get("source_path"), chunk.meta.get("pdf_path")
+            ),
             "citation": citation_number,
             "chunk": chunk.meta.get("chunk_number"),
             "score": chunk.score,
@@ -124,7 +117,7 @@ def add_trace_citations(
         return None
 
     citation_by_source = {
-        (source["raw_document"], source["chunk"]): source["citation"]
+        (source["document"], source["chunk"]): source["citation"]
         for source in sources
     }
     trace = dict(trace_payload)
@@ -135,12 +128,24 @@ def add_trace_citations(
         }
         for item in trace.get("important_evidence", [])
     ]
+    trace["privacy_checklist"] = [
+        {
+            **check,
+            "citation": citation_by_source.get(
+                (
+                    (check.get("evidence") or {}).get("document"),
+                    (check.get("evidence") or {}).get("chunk"),
+                )
+            ),
+        }
+        for check in trace.get("privacy_checklist", [])
+    ]
     return compact_trace(trace, category)
 
 
 def compact_trace(trace: dict, category: str) -> dict:
     query_type = trace.get("query_type")
-    return {
+    compact = {
         "query_type": query_type,
         "category": category,
         "route_reason": route_reason(query_type),
@@ -153,6 +158,19 @@ def compact_trace(trace: dict, category: str) -> dict:
             "answer_type": trace.get("conclusion", {}).get("answer_type"),
         },
     }
+    if trace.get("workflow") == "privacy_compliance":
+        compact["workflow"] = trace["workflow"]
+        compact["privacy_checklist"] = [
+            {
+                "issue": check.get("issue"),
+                "rule_status": check.get("rule_status"),
+                "fact_status": check.get("fact_status"),
+                "citation": check.get("citation"),
+            }
+            for check in trace.get("privacy_checklist", [])
+        ]
+        compact["missing_facts"] = trace.get("missing_facts", [])
+    return compact
 
 
 @asynccontextmanager
@@ -162,6 +180,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         app.state.rag.close()
+        await close_http_client()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -170,7 +189,10 @@ app = FastAPI(lifespan=lifespan)
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     strategy: Literal["vector", "graph", "neuro_symbolic"] = "graph"
-    category: str = "auto"
+    category: Literal[
+        "auto", "all", "statute", "regulation", "precedent",
+        "constitutional_decision", "contract", "guidance", "qna",
+    ] = "auto"
 
 
 def get_rag(request: Request) -> LegalRAG:
@@ -191,7 +213,7 @@ def list_documents(rag_system: Annotated[LegalRAG, Depends(get_rag)]) -> dict:
 
 
 @app.get("/documents/raw/{document_path:path}")
-def raw_document(document_path: str) -> FileResponse:
+def raw_document(document_path: str, download: bool = False) -> FileResponse:
     path = (RAW_DOCUMENTS_PATH / document_path).resolve()
     try:
         path.relative_to(RAW_DOCUMENTS_PATH)
@@ -204,7 +226,7 @@ def raw_document(document_path: str) -> FileResponse:
         path,
         media_type="application/pdf",
         filename=path.name,
-        content_disposition_type="inline",
+        content_disposition_type="attachment" if download else "inline",
     )
 
 
@@ -214,24 +236,20 @@ async def ask(
     rag_system: Annotated[LegalRAG, Depends(get_rag)],
 ) -> StreamingResponse:
     try:
-        chunks = rag_system.retrieve(
-            request.question, strategy=request.strategy, category=request.category
+        result = await asyncio.to_thread(
+            rag_system.retrieve,
+            request.question,
+            strategy=request.strategy,
+            category=request.category,
         )
     except RetrievalUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
     async def stream():
-        trace_payload = next(
-            (
-                chunk.meta.get("symbolic_trace")
-                for chunk in chunks
-                if chunk.meta.get("symbolic_trace")
-            ),
-            None,
-        )
-        source_chunks = chunks
+        trace_payload = result.symbolic_trace
+        source_chunks = result.evidence
         sources = source_rows(source_chunks)
-        graph_facts = graph_fact_rows(chunks)
+        graph_facts = graph_fact_rows(result.graph_facts)
         trace_payload = add_trace_citations(trace_payload, sources, request.category)
         yield stream_event("sources", sources=sources)
         if graph_facts:
@@ -239,7 +257,7 @@ async def ask(
         if trace_payload:
             yield stream_event("trace", trace=trace_payload)
 
-        tokens = asyncio.Queue()
+        tokens = asyncio.Queue(maxsize=32)
 
         async def send_token(token: str) -> None:
             await tokens.put(token)
@@ -248,7 +266,7 @@ async def ask(
             try:
                 await rag_system.generate_async(
                     request.question,
-                    source_chunks,
+                    result,
                     send_token,
                 )
             except Exception as error:
@@ -264,7 +282,10 @@ async def ask(
                 if token is None:
                     break
                 if isinstance(token, Exception):
-                    yield stream_event("error")
+                    yield stream_event(
+                        "error",
+                        message="Generation failed. Review the cited sources.",
+                    )
                     await generation
                     return
                 yield stream_event("token", text=token)

@@ -52,9 +52,8 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` installs `torch` from the PyTorch CPU wheel index before
-`sentence-transformers`, which avoids pulling NVIDIA CUDA packages on CPU-only
-servers.
+`requirements.txt` pins the tested direct dependencies and uses the PyTorch CPU
+wheel index, which avoids pulling NVIDIA CUDA packages on CPU-only servers.
 
 Download local models once:
 
@@ -101,6 +100,17 @@ To use BGE-M3 instead:
 
 ```bash
 LEGALRAG_EMBEDDING_MODEL="BAAI/bge-m3" ./scripts/run
+```
+
+To use an OpenAI-compatible hosted generator, keep the API key in the
+environment rather than a repository file:
+
+```bash
+export LEGALRAG_LLM_PROVIDER="openai_compatible"
+export LEGALRAG_LLM_BASE_URL="https://opencode.ai/zen/go/v1"
+export LEGALRAG_LLM_API_KEY="..."
+export LEGALRAG_GENERATION_MODEL="deepseek-v4-flash"
+./scripts/dev
 ```
 
 `scripts/index` only starts Neo4j and indexes documents. `scripts/dev` starts
@@ -316,11 +326,12 @@ docker compose start neo4j
 
 ## Documents
 
-Put Korean law HWPX files, selectable-text PDFs, or plain UTF-8 TXT files under
-`documents/raw/`. The indexer reads this folder recursively and ignores
-`documents/excluded/`. The current MVP assumes one file per law or source
-document. Separate TXT article-title exports are not needed when the HWPX export
-already includes article titles and lists.
+Register Korean law HWPX files, selectable-text PDFs, or plain UTF-8 TXT files in
+`documents/source_manifest.csv`, and place the assets under `documents/raw/`.
+The manifest controls inclusion and supplies source metadata. HWPX and PDF
+assets for the same legal version are treated as representations of one logical
+document; HWPX supplies searchable text and the matching PDF supplies the
+browser source when both exist.
 
 PDF extraction uses `pypdfium2` by default. The loader also extracts with
 `pdfplumber` and chooses that result when the PDFium text looks weak or when
@@ -328,11 +339,10 @@ pdfplumber preserves more legal text, such as table-heavy text or Hanja.
 
 Use `./scripts/index` when documents, embedding model, or chunking settings change.
 Existing unchanged documents are skipped using Neo4j metadata: source path, file
-timestamp, embedding model, chunking version, and word limit.
-
-The current chunking version is `word-block-v14-boundary-triples`. If this value changes
-in code (`CHUNKING_VERSION` in `backend/config.py`), the next `./scripts/index` run
-rebuilds affected documents.
+timestamp, embedding model, automatic indexing-pipeline fingerprint, and word
+limit. The fingerprint is calculated from the parser, chunker, metadata, and
+graph-indexing code, so relevant code changes trigger rebuilding without a
+manual version edit.
 
 ## Retrieval Strategies
 
@@ -345,12 +355,12 @@ The `/ask` endpoint accepts an optional strategy in the JSON body:
 Available strategies:
 
 - `vector`: return only the top vector-search chunks.
-- `graph`: GraphRAG mode. Start from vector hits, add nearby chunk parts, add
-  graph facts from extracted concepts and relationships, and expand through
+- `graph`: GraphRAG mode. Combine vector and legal-text candidates, add nearby
+  chunk parts, expose an extracted graph relation as cited evidence, and expand through
   `LegalUnit` nodes only when the question explicitly asks for article or
   section-level context.
-- `neuro_symbolic`: Neuro-Symbolic mode. Start with GraphRAG evidence, then add
-  an explicit symbolic reasoning trace that lists matched concepts, checked
+- `neuro_symbolic`: Neuro-Symbolic mode. Start with GraphRAG evidence, then use
+  an explicit symbolic trace to prioritize supporting evidence and list matched concepts, checked
   definitions, legal relations, exceptions, conditions, supporting chunks, and
   graph paths.
 
