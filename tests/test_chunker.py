@@ -133,6 +133,26 @@ class TestChunkText:
         chunks = chunk_text(text, max_words=140, document_name="test.hwpx")
         assert len(chunks) >= 2
 
+    def test_article_and_enumerated_children_share_a_retrieval_chunk(self):
+        text = (
+            "제4조(의무) 사업주는 다음 조치를 하여야 한다.\n\n"
+            "① 안전보건관리체계를 구축한다.\n\n"
+            "1. 필요한 인력을 배치한다.\n\n"
+            "2. 필요한 예산을 편성한다."
+        )
+
+        chunks = chunk_text(
+            text,
+            max_words=140,
+            document_name="law.hwpx",
+            document_type="statute",
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].meta["article_number"] == "제4조"
+        paths = chunks[0].meta["legal_unit_paths"]
+        assert [path["item_number"] for path in paths[-2:]] == ["1.", "2."]
+
     def test_structure_metadata_propagated(self):
         text = "제15조(목적) 이 법은 개인정보 보호를 목적으로 한다."
         chunks = chunk_text(text, max_words=140, document_name="test.hwpx")
@@ -154,3 +174,37 @@ class TestChunkText:
         chunks = chunk_text(text, max_words=140, document_name="test.hwpx")
         numbers = [c.meta["chunk_number"] for c in chunks]
         assert numbers == list(range(1, len(chunks) + 1))
+
+    def test_removes_amendment_boilerplate_and_repeated_short_headers(self):
+        text = (
+            "반복 안내\n\n반복 안내\n\n반복 안내\n\n"
+            "[전문개정 2020. 12. 8.]\n\n제1조(목적) 실제 법률 내용이다."
+        )
+
+        chunks = chunk_text(text, document_name="law.hwpx")
+
+        combined = " ".join(chunk.content for chunk in chunks)
+        assert "반복 안내" not in combined
+        assert "전문개정" not in combined
+        assert "실제 법률 내용" in combined
+
+    def test_pdf_page_marker_becomes_metadata_not_content(self):
+        chunks = chunk_text(
+            "[[PAGE:7]]\n\n제1조(목적) 실제 내용이다.",
+            document_name="law.pdf",
+        )
+
+        assert chunks[0].meta["page_number"] == 7
+        assert "PAGE" not in chunks[0].content
+
+    def test_guidance_does_not_treat_quoted_law_as_its_own_structure(self):
+        chunks = chunk_text(
+            "제30조(처리방침) 인용 법령이다.\n\n① 첫째 원칙이다.\n\n② 둘째 원칙이다.",
+            document_name="안내서.pdf",
+            document_type="guidance",
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].meta["article_number"] is None
+        assert "첫째 원칙" in chunks[0].content
+        assert "둘째 원칙" in chunks[0].content

@@ -8,6 +8,27 @@ def setup_schema(run_write) -> None:
     )
     run_write(
         """
+        CREATE INDEX document_logical_id IF NOT EXISTS
+        FOR (document:Document)
+        ON (document.logical_id)
+        """
+    )
+    run_write(
+        """
+        CREATE INDEX document_type IF NOT EXISTS
+        FOR (document:Document)
+        ON (document.document_type)
+        """
+    )
+    run_write(
+        """
+        CREATE INDEX chunk_source_path IF NOT EXISTS
+        FOR (chunk:Chunk)
+        ON (chunk.source_path)
+        """
+    )
+    run_write(
+        """
         CREATE CONSTRAINT chunk_id IF NOT EXISTS
         FOR (chunk:Chunk)
         REQUIRE chunk.id IS UNIQUE

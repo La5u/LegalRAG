@@ -1,11 +1,70 @@
 from backend.document import Document
 from backend.indexing import (
+    IndexBatch,
     chunk_body,
     document_is_current,
+    encode_chunks,
     embedding_text,
     heading_path,
+    prepare_index_rows,
     structure_label,
 )
+from backend.chunker import chunk_text
+from backend.graph_index import row_batches
+
+
+def test_prepare_index_rows_returns_named_index_batch():
+    batch = prepare_index_rows([], "documents/raw/empty.txt", "empty.txt", [])
+
+    assert isinstance(batch, IndexBatch)
+    assert batch.document_name == "empty.txt"
+    assert batch.chunk_rows == []
+
+
+def test_prepare_index_rows_deduplicates_shared_legal_hierarchy():
+    chunks = chunk_text(
+        (
+            "제4조(의무) 사업주는 조치를 하여야 한다.\n\n"
+            "① 다음 각 호의 조치를 한다.\n\n"
+            "1. 인력을 배치한다.\n\n"
+            "2. 예산을 편성한다."
+        ),
+        document_name="law.hwpx",
+        document_type="statute",
+    )
+    for chunk in chunks:
+        chunk.meta["document_type"] = "statute"
+
+    batch = prepare_index_rows(
+        chunks,
+        "documents/raw/statutes/law.hwpx",
+        "law.hwpx",
+        [[0.0] for _chunk in chunks],
+    )
+
+    unit_ids = [row["id"] for row in batch.legal_unit_rows]
+    assert len(unit_ids) == len(set(unit_ids))
+    assert len(batch.chunk_rows[0]["legal_unit_ids"]) == 4
+
+
+def test_neo4j_rows_are_split_into_bounded_batches():
+    rows = [{"id": index} for index in range(1_201)]
+
+    batches = list(row_batches(rows))
+
+    assert [len(batch) for batch in batches] == [500, 500, 201]
+
+
+class RecordingEmbedder:
+    def encode(self, texts, **_kwargs):
+        self.texts = texts
+        return [[0.0] for _text in texts]
+
+
+def test_e5_passage_prefix_is_added_before_indexing():
+    embedder = RecordingEmbedder()
+    encode_chunks(embedder, [Document("법률 내용", {})])
+    assert embedder.texts == ["passage: 법률 내용"]
 
 
 # ---------------------------------------------------------------------------

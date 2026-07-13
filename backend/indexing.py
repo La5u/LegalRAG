@@ -1,28 +1,43 @@
 import logging
 import re
+from dataclasses import dataclass
 
 from backend.config import (
     CHUNKING_VERSION,
     DEFAULT_MAX_WORDS,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_MODEL,
-    NEO4J_VECTOR_INDEX,
+    EMBEDDING_PASSAGE_PREFIX,
 )
 from backend.connections import extract_connections
 from backend.constants import STRUCTURE_KINDS
 from backend.definitions import extract_definitions
 from backend.document import Document
-from backend.document_types import has_structural_legal_units
 from backend.graph_index import (
     build_case_rows,
     build_legal_unit_rows,
     delete_source_paths,
 )
-from backend.schema import setup_vector_index
 from backend.triples import extract_triples
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class IndexBatch:
+    """All rows prepared for one atomic document index transaction."""
+
+    document_name: str
+    document_metadata: dict
+    chunk_rows: list[dict]
+    legal_unit_rows: list[dict]
+    definition_rows: list[dict]
+    triple_rows: list[dict]
+    connection_rows: list[dict]
+    case_row: dict | None
+    holding_rows: list[dict]
+
 
 EMBEDDING_HEADING_PATTERN = re.compile(
     r"(?:(?<=\s)|^)(?:"
@@ -89,7 +104,10 @@ def embedding_text(content: str) -> str:
 
 
 def encode_chunks(embedding_model, chunks):
-    chunk_texts = [embedding_text(chunk_body(chunk)) for chunk in chunks]
+    chunk_texts = [
+        EMBEDDING_PASSAGE_PREFIX + embedding_text(chunk_body(chunk))
+        for chunk in chunks
+    ]
     if not chunk_texts:
         return []
     return embedding_model.encode(
@@ -101,15 +119,31 @@ def encode_chunks(embedding_model, chunks):
 
 
 def prepare_index_rows(chunks, source_path, document_name, chunk_embeddings):
-    legal_unit_rows = []
+    legal_unit_rows_by_id = {}
     chunk_rows = []
     chunk_article_ids = {}
-    has_legal_structure = has_structural_legal_units(source_path)
+    document_type = chunks[0].meta.get("document_type") if chunks else None
+    has_legal_structure = document_type in {"statute", "regulation", "contract"}
     for chunk, embedding in zip(chunks, chunk_embeddings, strict=True):
-        legal_units = build_legal_unit_rows(chunk, source_path, document_name)
+        path_metadata = chunk.meta.get("legal_unit_paths") or [chunk.meta]
+        legal_unit_sets = [
+            build_legal_unit_rows(
+                Document(chunk.content, metadata),
+                source_path,
+                document_name,
+                document_type=document_type,
+            )
+            for metadata in path_metadata
+        ]
+        legal_units = legal_unit_sets[0]
+        supported_unit_ids = []
+        for unit_set in legal_unit_sets:
+            for row in unit_set["rows"]:
+                legal_unit_rows_by_id[row["id"]] = row
+            if unit_set["deepest_id"]:
+                supported_unit_ids.append(unit_set["deepest_id"])
         body = chunk_body(chunk) if has_legal_structure else chunk.content
         path = heading_path(chunk.meta) if has_legal_structure else None
-        legal_unit_rows.extend(legal_units["rows"])
         chunk_article_ids[chunk.meta["chunk_number"]] = legal_units["ids"].get("article")
         chunk_rows.append(
             {
@@ -126,7 +160,16 @@ def prepare_index_rows(chunks, source_path, document_name, chunk_embeddings):
                 "group_id": chunk.meta["group_id"],
                 "part": chunk.meta["part"],
                 "source_path": source_path,
+                "document_title": chunk.meta.get("title") or document_name.rsplit(".", 1)[0],
+                "logical_id": chunk.meta.get("logical_id"),
+                "version_label": chunk.meta.get("version_label", ""),
+                "effective_date": chunk.meta.get("effective_date"),
+                "document_type": chunk.meta.get("document_type"),
+                "source_url": chunk.meta.get("source_url", ""),
+                "pdf_path": chunk.meta.get("pdf_path"),
+                "page_number": chunk.meta.get("page_number"),
                 "legal_unit_id": legal_units["deepest_id"],
+                "legal_unit_ids": list(dict.fromkeys(supported_unit_ids)),
                 "article_id": legal_units["ids"].get("article"),
                 "article_number": chunk.meta.get("article_number"),
                 "article_title": chunk.meta.get("article_title"),
@@ -151,46 +194,53 @@ def prepare_index_rows(chunks, source_path, document_name, chunk_embeddings):
         }
         for definition in extract_definitions(chunk_documents)
     ]
-    case_data = build_case_rows(chunk_documents, source_path, document_name)
-    return {
-        "document_name": document_name,
-        "chunk_rows": chunk_rows,
-        "legal_unit_rows": legal_unit_rows,
-        "definition_rows": definition_rows,
-        "triple_rows": extract_triples(chunk_documents),
-        "connection_rows": extract_connections(chunk_documents),
-        "case_row": case_data["case_row"],
-        "holding_rows": case_data["holding_rows"],
-    }
+    case_data = build_case_rows(
+        chunk_documents, source_path, document_name, document_type=document_type,
+    )
+    return IndexBatch(
+        document_name=document_name,
+        document_metadata={
+            "title": chunks[0].meta.get("title") if chunks else document_name.rsplit(".", 1)[0],
+            "logical_id": chunks[0].meta.get("logical_id") if chunks else None,
+            "version_label": chunks[0].meta.get("version_label", "") if chunks else "",
+            "effective_date": chunks[0].meta.get("effective_date") if chunks else None,
+            "document_type": chunks[0].meta.get("document_type") if chunks else None,
+            "source_name": chunks[0].meta.get("source_name", "") if chunks else "",
+            "source_url": chunks[0].meta.get("source_url", "") if chunks else "",
+            "pdf_path": chunks[0].meta.get("pdf_path") if chunks else None,
+        },
+        chunk_rows=chunk_rows,
+        legal_unit_rows=list(legal_unit_rows_by_id.values()),
+        definition_rows=definition_rows,
+        triple_rows=extract_triples(chunk_documents),
+        connection_rows=extract_connections(chunk_documents),
+        case_row=case_data["case_row"],
+        holding_rows=case_data["holding_rows"],
+    )
 
 
 def index_document(
-    run_write,
-    run_read,
     embedding_model,
     chunks,
     source_path,
     source_mtime_ns,
-    embedding_dimensions,
 ):
     logger.info("Indexing %s with %s chunks.", source_path, len(chunks))
     document_name = chunks[0].meta.get("document_name", source_path) if chunks else source_path
-    setup_vector_index(run_write, run_read, NEO4J_VECTOR_INDEX, embedding_dimensions)
-
     chunk_embeddings = encode_chunks(embedding_model, chunks)
 
-    index_rows = prepare_index_rows(chunks, source_path, document_name, chunk_embeddings)
+    batch = prepare_index_rows(chunks, source_path, document_name, chunk_embeddings)
     logger.info(
         "Prepared graph rows for %s: %s legal units, %s definitions, "
         "%s triples, %s connections, %s holdings.",
         source_path,
-        len(index_rows["legal_unit_rows"]),
-        len(index_rows["definition_rows"]),
-        len(index_rows["triple_rows"]),
-        len(index_rows["connection_rows"]),
-        len(index_rows["holding_rows"]),
+        len(batch.legal_unit_rows),
+        len(batch.definition_rows),
+        len(batch.triple_rows),
+        len(batch.connection_rows),
+        len(batch.holding_rows),
     )
-    return index_rows
+    return batch
 
 
 def document_is_current(run_read, source_path, source_mtime_ns):
