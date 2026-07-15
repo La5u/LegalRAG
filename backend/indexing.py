@@ -1,15 +1,16 @@
 import logging
+import hashlib
 import re
 from dataclasses import dataclass
 
 from backend.config import (
     CHUNKING_VERSION,
-    DEFAULT_MAX_WORDS,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_MODEL,
     EMBEDDING_PASSAGE_PREFIX,
+    INDEXING_VERSION,
 )
-from backend.connections import extract_connections
+from backend.connections import extract_exceptions
 from backend.constants import STRUCTURE_KINDS
 from backend.definitions import extract_definitions
 from backend.document import Document
@@ -18,6 +19,7 @@ from backend.graph_index import (
     build_legal_unit_rows,
     delete_source_paths,
 )
+from backend.text import deduplicate
 from backend.triples import extract_triples
 
 
@@ -34,7 +36,7 @@ class IndexBatch:
     legal_unit_rows: list[dict]
     definition_rows: list[dict]
     triple_rows: list[dict]
-    connection_rows: list[dict]
+    exception_rows: list[dict]
     case_row: dict | None
     holding_rows: list[dict]
 
@@ -103,19 +105,46 @@ def embedding_text(content: str) -> str:
     return EMBEDDING_HEADING_PATTERN.sub("", content).strip() or content
 
 
-def encode_chunks(embedding_model, chunks):
-    chunk_texts = [
-        EMBEDDING_PASSAGE_PREFIX + embedding_text(chunk_body(chunk))
-        for chunk in chunks
-    ]
-    if not chunk_texts:
-        return []
-    return embedding_model.encode(
-        chunk_texts,
+def embedding_input(chunk: Document) -> str:
+    headings = deduplicate(
+        value
+        for value in (
+            chunk.meta.get("title"),
+            heading_path(chunk.meta),
+        )
+        if value
+    )
+    body = chunk_body(chunk)
+    return "\n".join([" > ".join(headings), body]) if headings else body
+
+
+def embedding_hash(chunk: Document) -> str:
+    return hashlib.sha256(embedding_input(chunk).encode()).hexdigest()[:24]
+
+
+def encode_chunks(embedding_model, chunks, cached_embeddings=None):
+    cached_embeddings = cached_embeddings or {}
+    embeddings = [None] * len(chunks)
+    missing_indices = []
+    missing_texts = []
+    for index, chunk in enumerate(chunks):
+        cached = cached_embeddings.get(embedding_hash(chunk))
+        if cached is not None:
+            embeddings[index] = cached
+        else:
+            missing_indices.append(index)
+            missing_texts.append(EMBEDDING_PASSAGE_PREFIX + embedding_input(chunk))
+    if not missing_texts:
+        return embeddings
+    encoded = embedding_model.encode(
+        missing_texts,
         batch_size=EMBEDDING_BATCH_SIZE,
         normalize_embeddings=True,
         show_progress_bar=False,
     )
+    for index, embedding in zip(missing_indices, encoded, strict=True):
+        embeddings[index] = embedding
+    return embeddings
 
 
 def prepare_index_rows(chunks, source_path, document_name, chunk_embeddings):
@@ -155,6 +184,7 @@ def prepare_index_rows(chunks, source_path, document_name, chunk_embeddings):
                     if hasattr(embedding, "tolist")
                     else list(embedding)
                 ),
+                "embedding_hash": embedding_hash(chunk),
                 "chunk_number": chunk.meta["chunk_number"],
                 "document_name": chunk.meta["document_name"],
                 "group_id": chunk.meta["group_id"],
@@ -169,7 +199,7 @@ def prepare_index_rows(chunks, source_path, document_name, chunk_embeddings):
                 "pdf_path": chunk.meta.get("pdf_path"),
                 "page_number": chunk.meta.get("page_number"),
                 "legal_unit_id": legal_units["deepest_id"],
-                "legal_unit_ids": list(dict.fromkeys(supported_unit_ids)),
+                "legal_unit_ids": deduplicate(supported_unit_ids),
                 "article_id": legal_units["ids"].get("article"),
                 "article_number": chunk.meta.get("article_number"),
                 "article_title": chunk.meta.get("article_title"),
@@ -213,7 +243,7 @@ def prepare_index_rows(chunks, source_path, document_name, chunk_embeddings):
         legal_unit_rows=list(legal_unit_rows_by_id.values()),
         definition_rows=definition_rows,
         triple_rows=extract_triples(chunk_documents),
-        connection_rows=extract_connections(chunk_documents),
+        exception_rows=extract_exceptions(chunk_documents),
         case_row=case_data["case_row"],
         holding_rows=case_data["holding_rows"],
     )
@@ -224,20 +254,21 @@ def index_document(
     chunks,
     source_path,
     source_mtime_ns,
+    cached_embeddings=None,
 ):
     logger.info("Indexing %s with %s chunks.", source_path, len(chunks))
     document_name = chunks[0].meta.get("document_name", source_path) if chunks else source_path
-    chunk_embeddings = encode_chunks(embedding_model, chunks)
+    chunk_embeddings = encode_chunks(embedding_model, chunks, cached_embeddings)
 
     batch = prepare_index_rows(chunks, source_path, document_name, chunk_embeddings)
     logger.info(
         "Prepared graph rows for %s: %s legal units, %s definitions, "
-        "%s triples, %s connections, %s holdings.",
+        "%s triples, %s exceptions, %s holdings.",
         source_path,
         len(batch.legal_unit_rows),
         len(batch.definition_rows),
         len(batch.triple_rows),
-        len(batch.connection_rows),
+        len(batch.exception_rows),
         len(batch.holding_rows),
     )
     return batch
@@ -251,18 +282,18 @@ def document_is_current(run_read, source_path, source_mtime_ns):
         WHERE metadata.mtime_ns IS NOT NULL
             AND metadata.embedding_model IS NOT NULL
             AND metadata.chunking_version IS NOT NULL
-            AND metadata.max_words IS NOT NULL
+            AND metadata.indexing_version IS NOT NULL
         RETURN metadata.mtime_ns = $source_mtime_ns
             AND metadata.embedding_model = $embedding_model
             AND metadata.chunking_version = $chunking_version
-            AND metadata.max_words = $max_words
+            AND metadata.indexing_version = $indexing_version
             AS is_current
         """,
         source_path=source_path,
         source_mtime_ns=source_mtime_ns,
         embedding_model=EMBEDDING_MODEL,
         chunking_version=CHUNKING_VERSION,
-        max_words=DEFAULT_MAX_WORDS,
+        indexing_version=INDEXING_VERSION,
     )
     return bool(records and records[0]["is_current"])
 

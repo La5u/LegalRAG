@@ -121,14 +121,13 @@ startup.
 Run the local smoke checks after code changes:
 
 ```bash
-LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m scripts.smoke
+LEGALRAG_INTEGRATION=1 python -m pytest -q tests/test_integration_smoke.py
 ```
 
 Common evaluation runs:
 
 ```bash
-./scripts/eval curated retrieval
-./scripts/eval codex retrieval
+./scripts/eval retrieval
 python -m evaluation.report --results /tmp/legalrag-eval/multilingual-e5-small_curated_retrieval.jsonl
 ```
 
@@ -167,27 +166,10 @@ replacing the app container does not delete the indexed database.
 
 ## How To Test
 
-Quick backend smoke test:
+Neo4j integration checks:
 
 ```bash
-LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m scripts.smoke
-```
-
-Faster variants:
-
-```bash
-python -m scripts.smoke --compile-only
-python -m scripts.smoke --skip-write
-python -m scripts.smoke --skip-lookups
-```
-
-Expected output:
-
-```text
-PASS backend modules compile
-PASS Neo4j constraints exist
-PASS temporary Document -> LegalUnit -> SourceChunk tree writes and cleans up
-PASS 10 article graph lookups pass
+LEGALRAG_INTEGRATION=1 python -m pytest -q tests/test_integration_smoke.py
 ```
 
 Browser test:
@@ -377,9 +359,6 @@ The browser app labels these modes as `Vector`, `GraphRAG`, and
   `Term -> Definition -> LegalUnit`, with `SUPPORTED_BY` source evidence
 - Kiwi-assisted legal relationship graph:
   `Concept -[:HAS_DUTY|MAY|PROHIBITS|MUST_NOTIFY|MAY_REQUEST]-> Concept`
-- Legal connection graph:
-  `Chunk -[:CITES]-> Citation -[:REFERS_TO]-> Document` and
-  `Chunk -[:CITES]-> Citation -[:REFERS_TO_ARTICLE]-> LegalUnit`
 - Exception edges between concepts: `Concept -[:EXCEPTION_TO]-> Concept`
 - Neuro-symbolic trace categorizes retrieved evidence into definitions,
   obligations, prohibitions, permissions, exceptions, and conditions
@@ -393,9 +372,8 @@ The browser app labels these modes as `Vector`, `GraphRAG`, and
 
 - **Standalone Neo4j GraphRAG** — Haystack was removed because only three
   helper types were used from it, not pipelines or document stores.
-- **Deterministic graph construction** — Legal-unit, definition, case, and
-  citation nodes are built from text structure patterns and regex, not from
-  an LLM.
+- **Deterministic graph construction** — Legal-unit, definition, and case
+  nodes are built from text structure patterns and regex, not from an LLM.
 - **Neuro-symbolic traces** — The `neuro_symbolic` retrieval strategy adds a
   symbolic reasoning trace (definitions checked, relations found, conclusion
   type) as prompt context for the LLM.

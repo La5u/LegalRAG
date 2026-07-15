@@ -18,7 +18,7 @@ class TestNormalizeSourceText:
     @pytest.mark.parametrize(
         "text, expected",
         [
-            ("documents/raw/statutes/개인정보보호법.pdf", "statutes/개인정보보호법"),
+            ("documents/raw/statutes/개인정보보호법.pdf", "statutes개인정보보호법"),
             ("개인정보보호법(법률).hwpx", "개인정보보호법법률"),
             ("  hello   world  ", "helloworld"),
             ("documents/raw/test.pdf", "test"),
@@ -90,6 +90,62 @@ def test_full_decree_name_overrides_shorter_act_alias():
     assert matcher.constraints(
         "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법 시행령에 따르면"
     ) == ["documents/raw/regulations/인공지능 기본법 시행령.hwpx"]
+
+
+def test_short_canonical_statute_title_is_recognized_without_manual_alias():
+    records = [{
+        "title": "민사소송법",
+        "name": "민사소송법(법률)(제19516호).hwpx",
+        "source_path": "documents/raw/statutes/민사소송법(법률)(제19516호).hwpx",
+    }]
+
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("민사소송법 제24조의 예외는?") == [
+        records[0]["source_path"]
+    ]
+
+
+def test_guidance_alias_beats_broader_statute_alias():
+    records = [
+        {
+            "name": "주택임대차보호법(법률).hwpx",
+            "source_path": "documents/raw/statutes/주택임대차보호법.hwpx",
+        },
+        {
+            "name": "주택임대차_생활법령_QA.pdf",
+            "source_path": "documents/raw/qna/주택임대차_생활법령_QA.pdf",
+        },
+    ]
+
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("주택임대차 안내서의 주요 내용은?") == [
+        records[1]["source_path"]
+    ]
+
+
+def test_lease_scenario_routes_to_law_not_contract():
+    records = [
+        {
+            "name": "상가건물 임대차보호법(법률)",
+            "source_path": "documents/raw/statutes/상가건물 임대차보호법(법률).hwpx",
+        },
+        {
+            "name": "상가건물 임대차보호법 시행령",
+            "source_path": "documents/raw/regulations/상가건물 임대차보호법 시행령.hwpx",
+        },
+        {
+            "name": "상가건물 표준임대차계약서",
+            "source_path": "documents/raw/contracts/상가건물_임대차_표준계약서.pdf",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("상가 임차인의 계약갱신 요구는 언제까지인가요?") == [
+        records[0]["source_path"],
+        records[1]["source_path"],
+    ]
 
 
 # ---------------------------------------------------------------------------

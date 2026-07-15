@@ -1,10 +1,10 @@
 import asyncio
 
 from backend.document import Document
-from backend.graph_retrieve import GraphFact
 from backend.rag import LegalRAG, format_evidence_context, grounded_symbolic_context
 from backend.retrieval import RetrievalContext, RetrievalResult
 from backend.routing import QueryRoute
+from tests.conftest import make_graph_fact
 
 
 def retrieval_result(evidence, trace=None, graph_facts=None):
@@ -125,12 +125,11 @@ def test_graph_fact_is_formatted_beneath_its_supporting_source():
         "처리자는 통지하여야 한다.",
         {"document_name": "법.hwpx", "chunk_number": 7},
     )
-    fact = GraphFact(
+    fact = make_graph_fact(
         id="fact-1",
         document="법.hwpx",
         source_path="documents/raw/statutes/법.hwpx",
         chunk=7,
-        relation="MUST_NOTIFY",
         path="처리자 -MUST_NOTIFY-> 정보주체",
         sentence="처리자는 통지하여야 한다.",
         score=0.9,

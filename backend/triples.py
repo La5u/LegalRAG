@@ -129,8 +129,6 @@ def extract_triples(chunks: list[Document]) -> list[dict]:
                         "document_name": chunk.meta["document_name"],
                         "chunk_id": chunk.meta.get("id", ""),
                         "chunk_number": chunk.meta["chunk_number"],
-                        "legal_unit_id": chunk.meta.get("legal_unit_id"),
-                        "article_number": chunk.meta.get("article_number"),
                     }
                 )
 

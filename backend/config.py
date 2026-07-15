@@ -85,21 +85,37 @@ OLLAMA_THINK = os.getenv("LEGALRAG_OLLAMA_THINK", "false").lower() in {
 DEFAULT_MAX_WORDS = int(
     os.getenv("LEGALRAG_MAX_WORDS", EMBEDDING_PROFILE.get("max_words", "180"))
 )
-def pipeline_fingerprint() -> str:
-    """Hash indexing code so relevant code changes automatically invalidate the index."""
+PROSE_MAX_WORDS = int(os.getenv("LEGALRAG_PROSE_MAX_WORDS", "220"))
+
+
+def pipeline_fingerprint(names: tuple[str, ...]) -> str:
+    """Hash one indexing stage so unrelated changes retain reusable work."""
     root = Path(__file__).resolve().parent
     digest = hashlib.sha256()
-    for name in (
-        "catalog.py", "chunker.py", "connections.py", "definitions.py",
-        "indexing.py", "loaders.py", "triples.py",
-    ):
+    for name in names:
         digest.update((root / name).read_bytes())
     return digest.hexdigest()[:16]
 
 
-CHUNKING_VERSION = f"pipeline-{pipeline_fingerprint()}"
+CHUNKING_VERSION = "chunks-" + pipeline_fingerprint((
+    "catalog.py", "chunker.py", "loaders.py",
+)) + f"-{DEFAULT_MAX_WORDS}-{PROSE_MAX_WORDS}"
+INDEXING_VERSION = "graph-" + pipeline_fingerprint((
+    "connections.py", "definitions.py", "graph_index.py", "indexing.py",
+    "triples.py",
+))
+
+
+def chunk_word_limit(document_type: str | None) -> int:
+    if document_type in {"guidance", "qna", "precedent"}:
+        return PROSE_MAX_WORDS
+    return DEFAULT_MAX_WORDS
+
+
 if DEFAULT_MAX_WORDS <= 0:
     raise ValueError("LEGALRAG_MAX_WORDS must be greater than 0.")
+if PROSE_MAX_WORDS <= 0:
+    raise ValueError("LEGALRAG_PROSE_MAX_WORDS must be greater than 0.")
 if MAX_CONTEXT_WORDS <= 0:
     raise ValueError("LEGALRAG_MAX_CONTEXT_WORDS must be greater than 0.")
 if MAX_EVIDENCE_CHUNKS <= 0:

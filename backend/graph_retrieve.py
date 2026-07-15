@@ -3,13 +3,12 @@ from dataclasses import dataclass
 
 from backend.constants import (
     CONCEPT_STOP_TERMS,
-    CONCEPT_STOP_TERMS_LIST,
     GRAPH_FACT_ID_PREFIX,
     QUERY_STOP_TERMS,
 )
 from backend.document import Document
 from backend.records import chunk_meta
-from backend.text import query_terms as normalized_query_terms
+from backend.text import deduplicate, query_terms as normalized_query_terms
 from backend.triples import CONCEPT_RELATION_TYPES
 
 
@@ -66,24 +65,20 @@ def graph_facts(
 ) -> list[GraphFact]:
     chunk_ids = chunk_ids or [chunk.meta["id"] for chunk in chunks if chunk.meta.get("id")]
     if source_paths is None:
-        source_paths = list(
-            dict.fromkeys(
-                chunk.meta["source_path"]
-                for chunk in chunks
-                if chunk.meta.get("source_path")
-            )
+        source_paths = deduplicate(
+            chunk.meta["source_path"]
+            for chunk in chunks
+            if chunk.meta.get("source_path")
         )
     if terms is None:
         terms = query_terms(query)
-    focus_article_numbers = list(
-        dict.fromkeys(
-            article_terms(query)
-            + [
-                chunk.meta["article_number"]
-                for chunk in chunks
-                if chunk.meta.get("article_number")
-            ]
-        )
+    focus_article_numbers = deduplicate(
+        article_terms(query)
+        + [
+            chunk.meta["article_number"]
+            for chunk in chunks
+            if chunk.meta.get("article_number")
+        ]
     )
     return (
         _case_holding_facts(run_read, query, source_paths, terms)
@@ -98,9 +93,6 @@ def graph_facts(
         + _graph_definition_facts(run_read, query, chunk_ids, source_paths, terms)
     )
 
-
-def graph_fact_documents(*args, **kwargs) -> list[Document]:
-    return [fact.to_document() for fact in graph_facts(*args, **kwargs)]
 
 
 def _case_holding_facts(
@@ -147,7 +139,7 @@ def _case_holding_facts(
             holding.chunk_number
         LIMIT 8
         """,
-        source_paths=list(dict.fromkeys(source_paths)),
+        source_paths=deduplicate(source_paths),
         case_terms=case_terms,
     )
     return [
@@ -231,11 +223,11 @@ def _graph_relation_facts(
         """,
         relations=CONCEPT_RELATION_TYPES,
         preferred_relations=preferred_relations(query),
-        concept_stop_terms=CONCEPT_STOP_TERMS_LIST,
+        concept_stop_terms=sorted(CONCEPT_STOP_TERMS),
         article_terms=article_terms(query),
         terms=terms,
         chunk_ids=chunk_ids,
-        source_paths=list(dict.fromkeys(source_paths)),
+        source_paths=deduplicate(source_paths),
         article_numbers=focus_article_numbers,
         has_source_paths=bool(source_paths),
         allow_case_sources=wants_case_fact(query),
@@ -304,7 +296,7 @@ def _graph_definition_facts(
         LIMIT 10
         """,
         chunk_ids=chunk_ids,
-        source_paths=list(dict.fromkeys(source_paths)),
+        source_paths=deduplicate(source_paths),
         article_numbers=article_terms(query),
         query_terms=terms,
     )

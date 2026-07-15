@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from collections import Counter
 import re
 
-from backend.config import DEFAULT_MAX_WORDS
+from backend.config import chunk_word_limit
 from backend.constants import STRUCTURE_KINDS, STRUCTURE_PATTERNS
 from backend.document import Document
 from backend.text import split_sentences
@@ -52,7 +52,8 @@ def split_long_block(block: str, max_words: int) -> list[str]:
     parts = []
     current_words = []
 
-    for sentence in split_sentences(block):
+    sentences = split_sentences(block) or [block]
+    for sentence in sentences:
         sentence_words = sentence.split()
         if len(current_words) + len(sentence_words) > max_words and current_words:
             parts.append(" ".join(current_words))
@@ -159,10 +160,11 @@ def add_chunk(
 
 def chunk_text(
     text: str,
-    max_words: int = DEFAULT_MAX_WORDS,
+    max_words: int | None = None,
     document_name: str = "Unknown document",
     document_type: str | None = None,
 ) -> list[Document]:
+    max_words = max_words or chunk_word_limit(document_type)
     uses_legal_structure = document_type in {
         "statute", "regulation", "contract", "constitutional_decision",
     } if document_type else True

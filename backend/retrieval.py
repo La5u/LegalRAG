@@ -12,7 +12,7 @@ from backend.document import Document
 from backend.document_types import document_type_from_source_path
 from backend.graph_retrieve import GraphFact, graph_facts
 from backend.reasoning import build_symbolic_trace
-from backend.records import chunk_return_fields, document_from_record
+from backend.records import chunk_return_fields, document_from_record, documents_from_records
 from backend.routing import QueryRoute, classify_query
 from backend.schema import vector_index_exists
 from backend.sources import (
@@ -22,14 +22,13 @@ from backend.sources import (
     is_contract_query,
     is_document_summary_query,
 )
-from backend.text import query_terms
+from backend.text import deduplicate, query_terms
 
 
 LEGAL_UNIT_MATCH_LIMIT = 8
 LEGAL_UNIT_BROAD_MATCH_LIMIT = 4
 LEGAL_UNIT_EXPANSION_LIMIT = 6
 SPARSE_CHUNK_MATCH_LIMIT = 8
-SOURCE_VECTOR_OVERFETCH_FACTOR = 50
 SOURCE_MATCH_SCORES = {
     "article": 100,
     "start_strong": 80,
@@ -176,9 +175,9 @@ def adjacent_query_phrases(query: str) -> list[str]:
         word for word in re.findall(r"[가-힣A-Za-z0-9·ㆍ]+", query)
         if len(word) >= 2 and word.casefold() not in QUERY_STOP_TERMS
     ]
-    return list(dict.fromkeys(
+    return deduplicate(
         f"{left} {right}" for left, right in zip(words, words[1:])
-    ))[:10]
+    )[:10]
 
 
 def retrieve_exact_phrase_matches(
@@ -186,9 +185,9 @@ def retrieve_exact_phrase_matches(
 ) -> list[Document]:
     phrases = quoted_terms(query)
     if include_adjacent:
-        phrases = list(dict.fromkeys(
+        phrases = deduplicate(
             phrases + adjacent_query_phrases(query)[-6:]
-        ))
+        )
     if not phrases:
         return []
     source_paths = source_paths or []
@@ -228,6 +227,25 @@ def retrieve_vector_chunks(
     query_embedding = embedding_model.encode(
         EMBEDDING_QUERY_PREFIX + query, normalize_embeddings=True,
     ).tolist()
+    if source_paths:
+        records = run_read(
+            f"""
+            MATCH (chunk:Chunk)
+            WHERE chunk.source_path IN $source_paths
+                AND chunk.embedding IS NOT NULL
+            WITH chunk, vector.similarity.cosine(
+                chunk.embedding, $query_embedding
+            ) AS score
+            RETURN
+                {chunk_return_fields("chunk", "score")}
+            ORDER BY score DESC
+            LIMIT $candidate_limit
+            """,
+            candidate_limit=top_k,
+            query_embedding=query_embedding,
+            source_paths=source_paths,
+        )
+        return documents_from_records(records)
     records = run_read(
         f"""
         CALL db.index.vector.queryNodes(
@@ -242,15 +260,11 @@ def retrieve_vector_chunks(
         ORDER BY score DESC
         """,
         index_name=NEO4J_VECTOR_INDEX,
-        # Vector indexes cannot filter before searching. Over-fetching leaves
-        # enough candidates after a source or category constraint is applied.
-        candidate_limit=(
-            top_k * SOURCE_VECTOR_OVERFETCH_FACTOR if source_paths else top_k
-        ),
+        candidate_limit=top_k,
         query_embedding=query_embedding,
-        source_paths=source_paths or [],
+        source_paths=[],
     )
-    return [document_from_record(record) for record in records]
+    return documents_from_records(records)
 
 
 def retrieve_sparse_chunks(run_read, route) -> list[Document]:
@@ -280,7 +294,7 @@ def retrieve_sparse_chunks(run_read, route) -> list[Document]:
         terms=terms,
         limit=SPARSE_CHUNK_MATCH_LIMIT,
     )
-    return [document_from_record(record) for record in records]
+    return documents_from_records(records)
 
 
 def retrieve_legal_unit_matches(
@@ -364,7 +378,7 @@ def retrieve_legal_unit_matches(
         legal_unit_document_match_score=LEGAL_UNIT_MATCH_SCORES["document"],
         legal_unit_content_match_score=LEGAL_UNIT_MATCH_SCORES["content"],
     )
-    return [document_from_record(record) for record in records]
+    return documents_from_records(records)
 
 
 def retrieve_source_constrained_matches(run_read, query, route, source_paths) -> list[Document]:
@@ -411,7 +425,7 @@ def retrieve_source_constrained_matches(run_read, query, route, source_paths) ->
         source_title_match_score=SOURCE_MATCH_SCORES["title"],
         source_number_match_score=SOURCE_MATCH_SCORES["number"],
     )
-    return [document_from_record(record) for record in records]
+    return documents_from_records(records)
 
 
 def retrieve_document_summary_matches(run_read, query, source_paths) -> list[Document]:
@@ -434,7 +448,7 @@ def retrieve_document_summary_matches(run_read, query, source_paths) -> list[Doc
         source_paths=source_paths,
         terms=terms,
     )
-    return [document_from_record(record) for record in records]
+    return documents_from_records(records)
 
 
 def retrieve_contract_matches(run_read, query, source_paths) -> list[Document]:
@@ -469,7 +483,7 @@ def retrieve_contract_matches(run_read, query, source_paths) -> list[Document]:
         source_paths=source_paths,
         party_terms=party_terms,
     )
-    return [document_from_record(record) for record in records]
+    return documents_from_records(records)
 
 
 def retrieve_case_source_matches(run_read, query, source_paths) -> list[Document]:
@@ -494,9 +508,9 @@ def retrieve_case_source_matches(run_read, query, source_paths) -> list[Document
         LIMIT 10
         """,
         source_paths=source_paths,
-        case_terms=list(dict.fromkeys(case_terms)),
+        case_terms=deduplicate(case_terms),
     )
-    return [document_from_record(record) for record in records]
+    return documents_from_records(records)
 
 
 def attach_legal_context(run_read, documents) -> list[Document]:
@@ -513,7 +527,7 @@ def attach_legal_context(run_read, documents) -> list[Document]:
         """
         MATCH (chunk:Chunk)
         WHERE chunk.id IN $chunk_ids
-        OPTIONAL MATCH (unit:LegalUnit)-[:SUPPORTED_BY]->(chunk)
+        OPTIONAL MATCH (unit:LegalUnit)-[support:SUPPORTED_BY]->(chunk)
         OPTIONAL MATCH (article:LegalUnit {kind: "article"})-[:CONTAINS*0..3]->(unit)
         WITH chunk, unit, article, support
         ORDER BY
@@ -728,6 +742,8 @@ def select_evidence(
     documents: list[Document],
     top_k: int,
     max_words: int = MAX_CONTEXT_WORDS,
+    source_paths: list[str] | None = None,
+    article_numbers: list[str] | None = None,
 ) -> list[Document]:
     """Keep a shared, ordered evidence budget for every retrieval mode.
 
@@ -735,9 +751,32 @@ def select_evidence(
     with different tokenizers. A first oversized chunk is kept so an answer is
     never generated with no evidence.
     """
+    source_paths = source_paths or []
+    article_numbers = article_numbers or []
+
+    def priority(document: Document) -> int:
+        channels = document.meta.get("retrieval_channels", [])
+        source_match = (
+            not source_paths or document.meta.get("source_path") in source_paths
+        )
+        if (
+            source_match
+            and article_numbers
+            and document.meta.get("article_number") in article_numbers
+        ):
+            return 0
+        if source_match and "exact_phrase" in channels:
+            return 1
+        if source_match and "provision_focus" in channels:
+            return 2
+        if source_paths and source_match:
+            return 3
+        return 4
+
     ranked_documents = sorted(
         enumerate(documents),
         key=lambda item: (
+            priority(item[1]),
             -item[1].meta.get(
                 "fusion_score",
                 item[1].score if item[1].score is not None else 0.0,
@@ -1055,7 +1094,12 @@ def retrieve_baseline(
         chunks = attach_legal_context(run_read, chunks)
         chunks = attach_parent_leads(run_read, chunks)
     chunks = attach_enumerated_items(run_read, chunks)
-    return context, select_evidence(chunks, min(top_k, MAX_EVIDENCE_CHUNKS))
+    return context, select_evidence(
+        chunks,
+        min(top_k, MAX_EVIDENCE_CHUNKS),
+        source_paths=context.source_paths,
+        article_numbers=context.route.article_numbers,
+    )
 
 
 def retrieve_graph_facts(
@@ -1100,7 +1144,12 @@ def retrieve_vector_evidence(
         source_paths=context.source_paths,
     )
     chunks = attach_legal_context(run_read, chunks)
-    return context, select_evidence(chunks, min(top_k, MAX_EVIDENCE_CHUNKS))
+    return context, select_evidence(
+        chunks,
+        min(top_k, MAX_EVIDENCE_CHUNKS),
+        source_paths=context.source_paths,
+        article_numbers=context.route.article_numbers,
+    )
 
 
 def retrieve_chunks(

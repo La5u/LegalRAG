@@ -9,20 +9,18 @@ source "$PROJECT_ROOT/scripts/lib/runtime.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./scripts/eval [curated|codex] [retrieval|llm] [extra evaluator args...]
+  ./scripts/eval [retrieval|llm] [extra evaluator args...]
 
 Examples:
-  ./scripts/eval curated retrieval
-  ./scripts/eval codex retrieval --max-questions 20
-  ./scripts/eval curated llm --strategies graph
+  ./scripts/eval retrieval
+  ./scripts/eval llm --strategies graph
 
 Environment overrides:
-  QUESTIONS=/path/questions.jsonl RESULTS=/path/results.jsonl ./scripts/eval curated retrieval
+  QUESTIONS=/path/questions.jsonl RESULTS=/path/results.jsonl ./scripts/eval retrieval
 USAGE
 }
 
-QUESTION_SET="${1:-curated}"
-RUN_MODE="${2:-retrieval}"
+RUN_MODE="${1:-retrieval}"
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
@@ -30,22 +28,8 @@ fi
 if [[ $# -gt 0 ]]; then
   shift
 fi
-if [[ $# -gt 0 ]]; then
-  shift
-fi
 
-case "$QUESTION_SET" in
-  curated)
-    DEFAULT_QUESTIONS="evaluation/questions.jsonl"
-    ;;
-  codex)
-    DEFAULT_QUESTIONS="evaluation/codex_candidates.jsonl"
-    ;;
-  *)
-    usage >&2
-    exit 2
-    ;;
-esac
+DEFAULT_QUESTIONS="evaluation/questions.jsonl"
 
 case "$RUN_MODE" in
   retrieval)
@@ -76,7 +60,7 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
 PYTHON="$(resolve_python)"
 QUESTIONS="${QUESTIONS:-$DEFAULT_QUESTIONS}"
-RESULTS="${RESULTS:-/tmp/legalrag-eval/${LEGALRAG_EMBEDDING_MODEL##*/}_${QUESTION_SET}_${DEFAULT_RESULT_SUFFIX}.jsonl}"
+RESULTS="${RESULTS:-/tmp/legalrag-eval/${LEGALRAG_EMBEDDING_MODEL##*/}_curated_${DEFAULT_RESULT_SUFFIX}.jsonl}"
 CONCURRENCY="${EVAL_CONCURRENCY:-1}"
 
 exec "$PYTHON" -m evaluation.evaluator \

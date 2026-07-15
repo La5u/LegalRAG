@@ -62,18 +62,20 @@ class QueryRoute:
     search_terms: list[str] = field(default_factory=list)
 
 
+_CATEGORY_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("precedent", ("판례", "판결", "사건번호", "선고")),
+    ("constitutional_decision", ("헌법재판소", "헌재", "헌법소원")),
+    ("contract", ("계약서", "임대차", "임대인", "임차인", "보증금")),
+    ("guidance", ("안내서", "가이드라인", "매뉴얼")),
+    ("regulation", ("시행령", "대통령령", "시행규칙")),
+]
+
+
 def classify_document_category(query: str) -> str | None:
     lowered = query.casefold()
-    if any(term in lowered for term in ("판례", "판결", "사건번호", "선고")):
-        return "precedent"
-    if any(term in lowered for term in ("헌법재판소", "헌재", "헌법소원")):
-        return "constitutional_decision"
-    if any(term in lowered for term in ("계약서", "임대차", "임대인", "임차인", "보증금")):
-        return "contract"
-    if any(term in lowered for term in ("안내서", "가이드라인", "매뉴얼")):
-        return "guidance"
-    if any(term in lowered for term in ("시행령", "대통령령", "시행규칙")):
-        return "regulation"
+    for category, terms in _CATEGORY_RULES:
+        if any(term in lowered for term in terms):
+            return category
     return None
 
 
@@ -99,6 +101,18 @@ def classify_query(query: str, category: str | None = None) -> QueryRoute:
         max_terms=10,
     )
     doc_category = category or classify_document_category(query)
+    tasks = _classify_tasks(query, lowered, article_numbers)
+    kind = _pick_primary_kind(tasks)
+    return QueryRoute(
+        kind=kind,
+        tasks=tasks,
+        article_numbers=article_numbers,
+        search_terms=search_terms,
+        document_category=doc_category,
+    )
+
+
+def _classify_tasks(query: str, lowered: str, article_numbers: list[str]) -> list[str]:
     tasks = []
     if (
         "정의" in query
@@ -130,18 +144,15 @@ def classify_query(query: str, category: str | None = None) -> QueryRoute:
             tasks.append("condition")
     if "의무" in query or "하여야" in query or "해야" in query:
         tasks.append("obligation")
+    return tasks
+
+
+def _pick_primary_kind(tasks: list[str]) -> str:
     primary_order = (
         "definition", "citation", "exception", "prohibition", "condition",
         "obligation", "article_lookup",
     )
-    kind = next((task for task in primary_order if task in tasks), "general")
-    return QueryRoute(
-        kind=kind,
-        tasks=tasks,
-        article_numbers=article_numbers,
-        search_terms=search_terms,
-        document_category=doc_category,
-    )
+    return next((task for task in primary_order if task in tasks), "general")
 
 
 def route_reason(query_type: str | None) -> str:

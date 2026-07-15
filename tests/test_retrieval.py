@@ -3,6 +3,7 @@ import pytest
 from backend.config import NEO4J_VECTOR_INDEX
 from backend.document import Document
 from backend.graph_retrieve import GraphFact
+from tests.conftest import make_graph_fact
 from backend.retrieval import (
     RetrievalUnavailable,
     attach_enumerated_items,
@@ -164,19 +165,6 @@ def test_retrieve_baseline_caps_sources_for_all_modes():
     assert len(result.evidence) == 4
 
 
-def _graph_fact(score=0.5, path="개인정보처리자 -MUST_NOTIFY-> 정보주체", sentence="통지하여야 한다"):
-    return GraphFact(
-        id="gf-1",
-        document="법.pdf",
-        source_path="documents/raw/statutes/법.pdf",
-        chunk="graph-1",
-        relation="MUST_NOTIFY",
-        path=path,
-        sentence=sentence,
-        score=score,
-    )
-
-
 # ---------------------------------------------------------------------------
 # retrieve_exact_phrase_matches
 # ---------------------------------------------------------------------------
@@ -216,8 +204,8 @@ class TestRetrieveVectorChunks:
         with pytest.raises(RetrievalUnavailable):
             retrieve_vector_chunks(db.run_read, FakeEmbedder(), top_k=4, query="개인정보")
 
-    def test_source_constraint_overfetches_and_sends_paths(self):
-        db = FakeNeo4j(chunks=[chunk_record(1)])
+    def test_source_constraint_scores_only_matching_chunks(self):
+        db = RecordingNeo4j([chunk_record(1)])
 
         retrieve_vector_chunks(
             db.run_read,
@@ -227,8 +215,12 @@ class TestRetrieveVectorChunks:
             source_paths=["documents/raw/statutes/법.pdf"],
         )
 
-        vector_call = next(call for call in db.calls if "queryNodes" in call)
-        assert "$source_paths = [] OR node.source_path IN $source_paths" in vector_call
+        vector_call = next(
+            call for call in db.calls
+            if "vector.similarity.cosine" in call["query"]
+        )
+        assert "chunk.source_path IN $source_paths" in vector_call["query"]
+        assert vector_call["params"]["candidate_limit"] == 4
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +486,29 @@ class TestSelectEvidence:
 
         assert [document.meta["id"] for document in selected] == ["1", "2"]
 
+    def test_reserves_matching_article_before_fusion_score(self):
+        documents = [
+            Document(
+                "wrong",
+                {"id": "wrong", "source_path": "law", "article_number": "제2조"},
+                1.0,
+            ),
+            Document(
+                "right",
+                {"id": "right", "source_path": "law", "article_number": "제15조"},
+                0.1,
+            ),
+        ]
+
+        selected = select_evidence(
+            documents,
+            top_k=1,
+            source_paths=["law"],
+            article_numbers=["제15조"],
+        )
+
+        assert selected[0].meta["id"] == "right"
+
 
 class TestFuseRankedResults:
     def test_vector_outweighs_separate_term_only_matches(self):
@@ -528,13 +543,13 @@ class TestFuseRankedResults:
 # ---------------------------------------------------------------------------
 class TestSelectGraphFacts:
     def test_returns_sorted_facts(self):
-        facts = [_graph_fact(score=0.5, path="P1"), _graph_fact(score=0.9, path="P2")]
+        facts = [make_graph_fact(score=0.5, path="P1"), make_graph_fact(score=0.9, path="P2")]
         result = select_graph_facts(facts, top_k=2)
         assert len(result) == 2
         assert [fact.score for fact in result] == [0.9, 0.5]
 
     def test_dedups_by_key(self):
-        facts = [_graph_fact(score=0.5, path="P"), _graph_fact(score=0.9, path="P")]
+        facts = [make_graph_fact(score=0.5, path="P"), make_graph_fact(score=0.9, path="P")]
         result = select_graph_facts(facts, top_k=2)
         assert len(result) == 1
         assert result[0].score == 0.9
@@ -544,7 +559,7 @@ class TestSelectGraphFacts:
 
 
 def test_graph_facts_for_route_keeps_only_answer_capable_relations():
-    duty = _graph_fact(path="duty")
+    duty = make_graph_fact(path="duty")
     prohibition = GraphFact(
         id="prohibition",
         document=duty.document,
@@ -565,7 +580,7 @@ def test_graph_facts_for_route_keeps_only_answer_capable_relations():
 
 def test_graph_facts_for_route_omits_relations_for_direct_article_lookup():
     assert graph_facts_for_route(
-        [_graph_fact()], QueryRoute(kind="article_lookup")
+        [make_graph_fact()], QueryRoute(kind="article_lookup")
     ) == []
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from backend.catalog import PROJECT_ROOT, manifest_errors, selected_index_assets
 from backend.chunker import chunk_text
+from backend.index_cache import load_cached_chunks, save_cached_chunks
 from backend.loaders import load_document
 from backend.rag import LegalRAG
 
@@ -61,11 +62,14 @@ def main() -> None:
                 continue
 
             try:
-                chunks = chunk_text(
-                    load_document(document_path),
-                    document_name=document_path.name,
-                    document_type=document_type,
-                )
+                chunks = load_cached_chunks(source_path, source_mtime_ns)
+                if chunks is None:
+                    chunks = chunk_text(
+                        load_document(document_path),
+                        document_name=document_path.name,
+                        document_type=document_type,
+                    )
+                    save_cached_chunks(source_path, source_mtime_ns, chunks)
                 for chunk in chunks:
                     chunk.meta.update(metadata_by_path[document_path])
                 rag.index(
@@ -82,12 +86,10 @@ def main() -> None:
             indexed_count += 1
 
         if not failures:
-            removed_documents = rag.prune_missing_documents(
+            rag.prune_missing_documents(
                 [document_id(document_path) for document_path in document_paths],
                 cleanup_orphans=bool(indexed_count),
             )
-            if not selected_types and (indexed_count or removed_documents):
-                rag.relink_citations()
 
     if skipped_count:
         print(f"current documents skipped: {skipped_count}")

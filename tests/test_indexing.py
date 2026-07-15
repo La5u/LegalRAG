@@ -4,6 +4,8 @@ from backend.indexing import (
     chunk_body,
     document_is_current,
     encode_chunks,
+    embedding_hash,
+    embedding_input,
     embedding_text,
     heading_path,
     prepare_index_rows,
@@ -52,7 +54,7 @@ def test_neo4j_rows_are_split_into_bounded_batches():
 
     batches = list(row_batches(rows))
 
-    assert [len(batch) for batch in batches] == [500, 500, 201]
+    assert [len(batch) for batch in batches] == [1000, 201]
 
 
 class RecordingEmbedder:
@@ -65,6 +67,28 @@ def test_e5_passage_prefix_is_added_before_indexing():
     embedder = RecordingEmbedder()
     encode_chunks(embedder, [Document("법률 내용", {})])
     assert embedder.texts == ["passage: 법률 내용"]
+
+
+def test_embedding_input_keeps_document_and_article_headings():
+    chunk = Document(
+        "제15조(개인정보의 수집·이용) 동의를 받아야 한다.",
+        {
+            "title": "개인정보 보호법",
+            "article_number": "제15조",
+            "article_title": "개인정보의 수집·이용",
+        },
+    )
+
+    text = embedding_input(chunk)
+
+    assert text.startswith("개인정보 보호법 > 제15조(개인정보의 수집·이용)")
+    assert text.endswith("동의를 받아야 한다.")
+
+
+def test_cached_embedding_avoids_model_call():
+    chunk = Document("법률 내용", {})
+
+    assert encode_chunks(None, [chunk], {embedding_hash(chunk): [0.5]}) == [[0.5]]
 
 
 # ---------------------------------------------------------------------------

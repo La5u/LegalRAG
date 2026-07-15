@@ -28,6 +28,7 @@ from backend.document import Document
 from backend.llm import stream_model_payload
 from evaluation.metrics import (
     CITATION_PATTERN,
+    average,
     citation_matches,
     context_precision,
     normalize_metric_text,
@@ -442,20 +443,20 @@ def print_summary(results: list[EvaluationResult]) -> None:
             r.score for r in strat_results
             if r.score is not None and r.evaluation_mode == "llm_judge"
         ]
-        avg_exact = sum(exact_scores) / len(exact_scores) if exact_scores else 0.0
-        avg_llm = sum(llm_scores) / len(llm_scores) if llm_scores else 0.0
-        avg_precision = sum(r.source_precision for r in strat_results) / len(strat_results)
-        avg_trace = sum(r.symbolic_score for r in strat_results) / len(strat_results)
-        avg_latency = sum(r.latency for r in strat_results) / len(strat_results)
+        avg_exact = average(exact_scores)
+        avg_llm = average(llm_scores)
+        avg_precision = average([r.source_precision for r in strat_results])
+        avg_trace = average([r.symbolic_score for r in strat_results])
+        avg_latency = average([r.latency for r in strat_results])
         retrieval_only = all(r.details.startswith("retrieval_only_") for r in strat_results)
         print(f"\n[{strategy}]")
         print(f"  Questions: {len(strat_results)}")
         if not retrieval_only:
             print(f"  Exact/choice/citation avg: {avg_exact:.2f} ({len(exact_scores)} items)")
             print(f"  LLM-judge avg: {avg_llm:.2f} ({len(llm_scores)} items)")
-        print(f"  Document hit rate: {sum(r.document_hit for r in strat_results) / len(strat_results):.2f}")
-        print(f"  Citation recall: {sum(r.citation_recall for r in strat_results) / len(strat_results):.2f}")
-        print(f"  Mean reciprocal rank: {sum(r.reciprocal_rank for r in strat_results) / len(strat_results):.2f}")
+        print(f"  Document hit rate: {average([r.document_hit for r in strat_results]):.2f}")
+        print(f"  Citation recall: {average([r.citation_recall for r in strat_results]):.2f}")
+        print(f"  Mean reciprocal rank: {average([r.reciprocal_rank for r in strat_results]):.2f}")
         print(f"  Avg source precision: {avg_precision:.2f}")
         print(f"  Avg trace presence: {avg_trace:.2f}")
         print(f"  Avg latency: {avg_latency:.2f}s")

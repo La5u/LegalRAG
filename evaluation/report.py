@@ -2,15 +2,12 @@ import argparse
 from collections import defaultdict
 from pathlib import Path
 
+from evaluation.metrics import average
 from evaluation.schema import EvaluationResult, load_results
 
 
 DEFAULT_RESULTS = Path("evaluation/results.jsonl")
 DEFAULT_REPORT = Path("evaluation_results.md")
-
-
-def average(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
 
 
 def scored_values(rows: list[EvaluationResult]) -> list[float]:

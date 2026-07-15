@@ -3,6 +3,7 @@ import logging
 from neo4j import GraphDatabase
 
 from backend.config import (
+    CHUNKING_VERSION,
     EMBEDDING_MODEL,
     NEO4J_DATABASE,
     NEO4J_PASSWORD,
@@ -15,11 +16,11 @@ from backend.config import (
 from backend.graph_index import (
     delete_orphan_graph_nodes,
     delete_source_paths,
-    relink_citation_targets,
     write_index_transaction,
 )
 from backend.indexing import (
     document_is_current,
+    embedding_hash,
     index_document,
     prune_missing_documents,
 )
@@ -50,15 +51,15 @@ def grounded_symbolic_context(
     """Label one retrieved rule passage without predicting a conclusion."""
     if not trace:
         return None
+    citation_by_chunk = {
+        (chunk.meta.get("document_name"), chunk.meta.get("chunk_number")): number
+        for number, chunk in enumerate(chunks, start=1)
+    }
     if trace.get("workflow") == "privacy_compliance":
-        citations = {
-            (chunk.meta.get("document_name"), chunk.meta.get("chunk_number")): number
-            for number, chunk in enumerate(chunks, start=1)
-        }
         lines = []
         for check in trace.get("privacy_checklist", []):
             evidence = check.get("evidence") or {}
-            citation = citations.get((evidence.get("document"), evidence.get("chunk")))
+            citation = citation_by_chunk.get((evidence.get("document"), evidence.get("chunk")))
             rule_status = f"규정 근거 [{citation}]" if citation else "규정 근거 미검색"
             fact_status = "사실 진술됨" if check["fact_status"] == "stated" else "사실 확인 필요"
             lines.append(f"- {check['issue']}: {rule_status}; {fact_status}")
@@ -71,10 +72,6 @@ def grounded_symbolic_context(
     if not role:
         return None
     trace_key, label = role
-    citation_by_chunk = {
-        (chunk.meta.get("document_name"), chunk.meta.get("chunk_number")): number
-        for number, chunk in enumerate(chunks, start=1)
-    }
     for item in trace.get(trace_key, []):
         citation = citation_by_chunk.get((item.get("document"), item.get("chunk")))
         if citation:
@@ -179,47 +176,75 @@ class LegalRAG:
         delete_orphan_graph_nodes(self._run_write)
         self._source_matcher.invalidate()
 
-    def relink_citations(self) -> None:
-        relink_citation_targets(self._run_write)
-
     def index(
         self,
         chunks: list[Document],
         source_path: str,
         source_mtime_ns: int,
     ) -> None:
+        cached_embeddings = self._cached_embeddings(
+            source_path, source_mtime_ns,
+        )
         if not self._vector_index_ready:
+            dimensions = (
+                len(next(iter(cached_embeddings.values())))
+                if cached_embeddings
+                else self.embedding_dimensions
+            )
             setup_vector_index(
                 self._run_write,
                 self._run_read,
                 NEO4J_VECTOR_INDEX,
-                self.embedding_dimensions,
+                dimensions,
             )
             self._vector_index_ready = True
+        required_hashes = {embedding_hash(chunk) for chunk in chunks}
+        embedding_model = (
+            None
+            if required_hashes.issubset(cached_embeddings)
+            else self.embedding_model
+        )
         batch = index_document(
-            self.embedding_model,
+            embedding_model,
             chunks,
             source_path,
             source_mtime_ns,
+            cached_embeddings,
         )
 
         with self.driver.session(database=NEO4J_DATABASE) as session:
             session.execute_write(
                 write_index_transaction,
                 source_path,
-                batch.document_name,
-                batch.document_metadata,
                 source_mtime_ns,
-                batch.chunk_rows,
-                batch.legal_unit_rows,
-                batch.definition_rows,
-                batch.triple_rows,
-                batch.connection_rows,
-                batch.case_row,
-                batch.holding_rows,
+                batch,
             )
         self._source_matcher.invalidate()
         logger.info("Finished indexing %s.", source_path)
+
+    def _cached_embeddings(
+        self, source_path: str, source_mtime_ns: int,
+    ) -> dict[str, list[float]]:
+        records = self._run_read(
+            """
+            MATCH (document:Document {source_path: $source_path})-[:CONTAINS]->(chunk:Chunk)
+            WHERE document.mtime_ns = $source_mtime_ns
+                AND document.embedding_model = $embedding_model
+                AND document.chunking_version = $chunking_version
+                AND chunk.embedding_hash IS NOT NULL
+                AND chunk.embedding IS NOT NULL
+            RETURN chunk.embedding_hash AS embedding_hash,
+                chunk.embedding AS embedding
+            """,
+            source_path=source_path,
+            source_mtime_ns=source_mtime_ns,
+            embedding_model=EMBEDDING_MODEL,
+            chunking_version=CHUNKING_VERSION,
+        )
+        return {
+            record["embedding_hash"]: record["embedding"]
+            for record in records
+        }
 
     def list_documents(self) -> list[dict]:
         records = self._run_read(

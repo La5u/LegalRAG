@@ -67,3 +67,7 @@ def document_from_record(record) -> Document:
         ),
         score=record.get("score"),
     )
+
+
+def documents_from_records(records) -> list[Document]:
+    return [document_from_record(record) for record in records]

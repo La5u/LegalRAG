@@ -5,6 +5,10 @@ from backend.document import Document
 from backend.sources import normalize_source_text
 
 
+def average(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
 CIRCLED_CLAUSES = {
     mark: f"제{index}항"
     for index, mark in enumerate(CIRCLED_CLAUSE_MARKS, start=1)

@@ -208,3 +208,12 @@ class TestChunkText:
         assert chunks[0].meta["article_number"] is None
         assert "첫째 원칙" in chunks[0].content
         assert "둘째 원칙" in chunks[0].content
+
+    def test_guidance_uses_larger_prose_chunks_than_statutes(self):
+        text = " ".join(f"단어{i}" for i in range(179)) + " 문장이다."
+
+        guidance = chunk_text(text, document_type="guidance")
+        statute = chunk_text(text, document_type="statute")
+
+        assert len(guidance) == 1
+        assert len(statute) == 2

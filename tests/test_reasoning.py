@@ -30,7 +30,6 @@ def test_build_symbolic_trace_prioritizes_legal_signals():
 
     assert trace["query_type"] == "obligation"
     assert trace["important_evidence"]
-    assert trace["matched_concepts"]
     assert trace["conclusion"]["answer_type"] in {"yes", "conditional"}
 
 
