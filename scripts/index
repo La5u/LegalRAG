@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+source "$PROJECT_ROOT/scripts/lib/runtime.sh"
+source "$PROJECT_ROOT/scripts/lib/neo4j.sh"
+
+PYTHON="$(resolve_python)"
+ensure_neo4j
+wait_neo4j "$PYTHON"
+
+exec "$PYTHON" -m backend.index

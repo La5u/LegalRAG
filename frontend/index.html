@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Legal RAG</title>
+  <style>
+    body { max-width: 780px; margin: 32px auto; padding: 0 18px; font: 16px Arial; color: #181818; background: #fbfbfa; }
+    h1 { font-size: 1.45rem; margin: 0 0 18px; }
+    form { display: flex; flex-direction: column; gap: 8px; }
+    input { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #b8b8b8; border-radius: 6px; font: inherit; background: #fff; }
+    select { padding: 7px 9px; border: 1px solid #b8b8b8; border-radius: 5px; background: #fff; color: #222; }
+    button { padding: 7px 12px; border: 1px solid #999; border-radius: 5px; background: #222; color: #fff; font: inherit; cursor: pointer; }
+    button.secondary { background: #f1f1f1; color: #222; }
+    button:disabled { cursor: default; opacity: 0.55; }
+    .control-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .status { color: #666; font-size: 0.9rem; min-height: 1.2em; }
+    #answer { white-space: pre-wrap; margin: 24px 0; line-height: 1.55; }
+    #trace-panel { display: none; margin: 18px 0; }
+    #trace { background: #f6f6f6; padding: 12px; overflow: auto; }
+    #trace p { margin: 0 0 8px; }
+    #graph-facts-panel { display: none; margin: 18px 0; }
+    #graph-facts { background: #f6f6f6; padding: 12px; }
+    .graph-view { width: 100%; min-height: 220px; display: block; }
+    .graph-node { fill: #68bdf6; stroke: #4a8db7; stroke-width: 2; }
+    .graph-node-target { fill: #ff756e; stroke: #c95a55; }
+    .graph-node-focus { fill: #f2baf6; stroke: #b980bd; }
+    .graph-edge { stroke: #a5abb6; stroke-width: 2; marker-end: url(#graph-arrow); }
+    .graph-label { fill: #fff; font-size: 11px; font-weight: 700; }
+    .graph-relation-box { fill: #f5f5f5; stroke: #b8bec9; stroke-width: 1; }
+    .graph-relation { fill: #4b5563; font-size: 10px; font-weight: 700; }
+    .graph-sentence-list { margin: 10px 0 0; padding-left: 18px; color: #444; font-size: 0.92rem; line-height: 1.45; }
+    details { border-top: 1px solid #d2d2d2; padding: 10px 0; }
+    summary { cursor: pointer; list-style: none; color: #777; }
+    details[open] > summary { color: #111; }
+    summary::-webkit-details-marker { display: none; }
+    details p { line-height: 1.5; }
+    .document-source { border-top: 1px solid #ccc; }
+    .legal-unit-source { border-top: 0; margin-left: 18px; padding: 8px 0; }
+    .chunk-source { border-top: 0; margin-left: 18px; padding: 6px 0; }
+    .chunk-source.used-source { background: #fff8d8; padding-left: 8px; padding-right: 8px; }
+    .source-actions { display: flex; gap: 8px; margin: 8px 0 0; }
+    .source-actions a { color: #333; font-size: 0.9rem; }
+    .source-heading { color: #555; font-size: 0.88rem; margin: 8px 0 0; }
+    .file-badge { margin-left: 6px; color: #666; font-size: 0.78rem; font-weight: 600; }
+    .direct-source-list { margin-left: 18px; }
+    .graph-fact-document { border-top: 0; padding: 8px 0; }
+    .graph-fact-row { border-top: 0; margin-left: 18px; padding: 6px 0; }
+    .citation { font-size: 0.75em; vertical-align: super; line-height: 0; }
+    .citation a { text-decoration: none; }
+    .citation a:hover { text-decoration: underline; }
+    .trace-citation a { text-decoration: none; }
+    .trace-citation a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Legal RAG</h1>
+  <form id="chat">
+    <input id="question" placeholder="Ask about your documents" required>
+    <div class="control-row">
+      <select id="strategy" aria-label="Retrieval strategy">
+        <option value="neuro_symbolic">Neuro-Symbolic</option>
+        <option value="graph">GraphRAG</option>
+        <option value="vector">Vector</option>
+      </select>
+      <select id="category" aria-label="Document category">
+        <option value="auto">Auto</option>
+        <option value="statute">Statutes</option>
+        <option value="regulation">Regulations</option>
+        <option value="precedent">Precedents</option>
+        <option value="constitutional_decision">Constitutional</option>
+        <option value="contract">Contracts</option>
+        <option value="guidance">Guidance</option>
+        <option value="qna">Q&A</option>
+      </select>
+      <button id="ask-button">Ask</button>
+      <button id="stop-button" class="secondary" type="button" hidden>Stop</button>
+      <span id="status" class="status" aria-live="polite"></span>
+    </div>
+  </form>
+  <div id="answer"></div>
+  <details id="trace-panel">
+    <summary>Reasoning Trace</summary>
+    <div id="trace"></div>
+  </details>
+  <details id="graph-facts-panel">
+    <summary>Graph Facts</summary>
+    <div id="graph-facts"></div>
+  </details>
+  <div id="sources"></div>
+
+  <script>
+    const form = document.querySelector("#chat");
+    const question = document.querySelector("#question");
+    const strategy = document.querySelector("#strategy");
+    const category = document.querySelector("#category");
+    const askButton = document.querySelector("#ask-button");
+    const stopButton = document.querySelector("#stop-button");
+    const status = document.querySelector("#status");
+    const answer = document.querySelector("#answer");
+    const tracePanel = document.querySelector("#trace-panel");
+    const trace = document.querySelector("#trace");
+    const graphFactsPanel = document.querySelector("#graph-facts-panel");
+    const graphFacts = document.querySelector("#graph-facts");
+    const sources = document.querySelector("#sources");
+    let activeController = null;
+    let activeRequestId = 0;
+    let activeDotAnimation = null;
+
+    function setBusy(isBusy) {
+      askButton.textContent = isBusy ? "Ask again" : "Ask";
+      stopButton.hidden = !isBusy;
+      status.textContent = isBusy ? "Generating" : "";
+    }
+
+    function stopActiveRequest(message = "Stopped.") {
+      if (!activeController) return;
+      activeController.abort();
+      activeController = null;
+      activeRequestId += 1;
+      if (activeDotAnimation) clearInterval(activeDotAnimation);
+      activeDotAnimation = null;
+      setBusy(false);
+      status.textContent = message;
+    }
+
+    function openCitationTarget(target) {
+      let current = target;
+      while (current) {
+        if (current.tagName === "DETAILS") current.open = true;
+        current = current.parentElement;
+      }
+      target.scrollIntoView({behavior: "smooth", block: "start"});
+    }
+
+    function appendCitationLink(parent, chunkNumber, superscript = true) {
+      const wrapper = superscript
+        ? document.createElement("sup")
+        : document.createElement("span");
+      const link = document.createElement("a");
+      wrapper.className = superscript ? "citation" : "trace-citation";
+      link.href = `#source-${chunkNumber}`;
+      link.textContent = `[${chunkNumber}]`;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        const target = document.querySelector(link.hash);
+        if (target) openCitationTarget(target);
+      });
+      wrapper.append(link);
+      parent.append(wrapper);
+    }
+
+    function appendFormattedText(parent, text) {
+      const inlinePattern = /\[(\d+)\]|\*\*([^*]+)\*\*/g;
+      let previousEnd = 0;
+
+      for (const match of text.matchAll(inlinePattern)) {
+        parent.append(document.createTextNode(text.slice(previousEnd, match.index)));
+
+        if (match[1]) {
+          appendCitationLink(parent, match[1]);
+        } else {
+          const strong = document.createElement("strong");
+          strong.textContent = match[2];
+          parent.append(strong);
+        }
+        previousEnd = match.index + match[0].length;
+      }
+
+      parent.append(document.createTextNode(text.slice(previousEnd)));
+    }
+
+    function renderAnswer(answerText) {
+      answer.replaceChildren();
+      appendFormattedText(answer, answerText);
+      highlightAnswerSources(answerText);
+    }
+
+    function highlightAnswerSources(answerText) {
+      const citedNumbers = [...answerText.matchAll(/\[(\d+)\]/g)]
+        .map((match) => match[1]);
+      for (const citation of citedNumbers) {
+        document.querySelector(`#source-${citation}`)?.classList.add("used-source");
+      }
+    }
+
+    function renderTrace(traceData) {
+      trace.replaceChildren();
+      const route = document.createElement("p");
+      const categoryLine = document.createElement("p");
+      const routeReason = document.createElement("p");
+      const answerShape = document.createElement("p");
+      route.textContent = `Route: ${traceLabel(traceData.query_type)}`;
+      categoryLine.textContent = `Category: ${traceLabel(traceData.category)}`;
+      routeReason.textContent = `Why: ${traceData.route_reason || "No route explanation was returned."}`;
+      answerShape.textContent = `Answer shape: ${traceLabel(traceData.conclusion?.answer_type)}`;
+      trace.append(route, categoryLine, routeReason, answerShape);
+
+      const citations = (traceData.important_evidence || [])
+        .map((item) => item.citation)
+        .filter(Boolean)
+        .filter((citation, index, all) => all.indexOf(citation) === index);
+      if (citations.length) {
+        const evidence = document.createElement("p");
+        evidence.append("Evidence: ");
+        for (const citation of citations) {
+          appendCitationLink(evidence, citation, false);
+          evidence.append(" ");
+        }
+        trace.append(evidence);
+      }
+      tracePanel.style.display = "block";
+    }
+
+    function traceLabel(value) {
+      const labels = {
+        article_lookup: "article lookup",
+        condition: "condition check",
+        definition: "definition",
+        exception: "exception check",
+        general: "general",
+        obligation: "duty check",
+        prohibition: "prohibition check",
+        yes: "yes/no",
+        no: "yes/no",
+        conditional: "conditional",
+        article_text: "article text",
+        not_answered: "not found",
+        auto: "auto",
+        all: "all documents",
+        statute: "statutes",
+        regulation: "regulations",
+        precedent: "precedents",
+        constitutional_decision: "constitutional decisions",
+        contract: "contracts",
+        guidance: "guidance",
+        qna: "Q&A"
+      };
+      return labels[value] || value || "unknown";
+    }
+
+    function renderGraphFacts(facts) {
+      graphFacts.replaceChildren();
+      const parsedFacts = facts.map(parseGraphFact).filter(Boolean).slice(0, 6);
+      if (parsedFacts.length) graphFacts.append(buildGraphView(parsedFacts));
+      graphFacts.append(buildGraphSentenceList(facts.slice(0, 6)));
+      graphFactsPanel.style.display = facts.length ? "block" : "none";
+    }
+
+    function parseGraphFact(fact) {
+      const path = fact.path || "";
+      const match = path.match(/^(?:\[[^\]]+\]\s*)?(.+?)\s+-([^->]+)->\s+(.+)$/);
+      if (!match) return null;
+      return {
+        source: match[1].trim(),
+        relation: (fact.relation || match[2]).trim(),
+        target: match[3].trim(),
+        sentence: fact.sentence || "",
+        document: fact.document || ""
+      };
+    }
+
+    function buildGraphView(facts) {
+      const namespace = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(namespace, "svg");
+      const width = 720;
+      const rowGap = 70;
+      const height = Math.max(220, 58 + facts.length * rowGap);
+      const leftX = 150;
+      const rightX = 570;
+      svg.setAttribute("class", "graph-view");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", "Graph facts");
+      appendGraphMarker(svg);
+
+      facts.forEach((fact, index) => {
+        const y = 42 + index * rowGap;
+        appendGraphEdge(svg, leftX + 37, y, rightX - 37, y);
+        appendGraphRelation(svg, (leftX + rightX) / 2, y - 7, relationLabel(fact.relation));
+        appendGraphNode(svg, leftX, y, fact.source, index === 0);
+        appendGraphNode(svg, rightX, y, fact.target, false, true);
+      });
+      return svg;
+    }
+
+    function appendGraphMarker(svg) {
+      const defs = document.createElementNS(svg.namespaceURI, "defs");
+      const marker = document.createElementNS(svg.namespaceURI, "marker");
+      const path = document.createElementNS(svg.namespaceURI, "path");
+      marker.setAttribute("id", "graph-arrow");
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "9");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "7");
+      marker.setAttribute("markerHeight", "7");
+      marker.setAttribute("orient", "auto-start-reverse");
+      path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      path.setAttribute("fill", "#a5abb6");
+      marker.append(path);
+      defs.append(marker);
+      svg.append(defs);
+    }
+
+    function appendGraphEdge(svg, x1, y1, x2, y2) {
+      const line = document.createElementNS(svg.namespaceURI, "line");
+      line.setAttribute("class", "graph-edge");
+      line.setAttribute("x1", x1);
+      line.setAttribute("y1", y1);
+      line.setAttribute("x2", x2);
+      line.setAttribute("y2", y2);
+      svg.append(line);
+    }
+
+    function appendGraphNode(svg, x, y, label, isFocus, isTarget = false) {
+      const circle = document.createElementNS(svg.namespaceURI, "circle");
+      const className = isFocus
+        ? "graph-node graph-node-focus"
+        : isTarget
+          ? "graph-node graph-node-target"
+          : "graph-node";
+      circle.setAttribute("class", className);
+      circle.setAttribute("cx", x);
+      circle.setAttribute("cy", y);
+      circle.setAttribute("r", 31);
+      svg.append(circle);
+      appendGraphText(svg, x, y + 4, compactLabel(label), "graph-label", "middle");
+    }
+
+    function appendGraphRelation(svg, x, y, label) {
+      const box = document.createElementNS(svg.namespaceURI, "rect");
+      const text = document.createElementNS(svg.namespaceURI, "text");
+      const width = Math.max(62, label.length * 6);
+      box.setAttribute("class", "graph-relation-box");
+      box.setAttribute("x", x - width / 2);
+      box.setAttribute("y", y - 16);
+      box.setAttribute("width", width);
+      box.setAttribute("height", 18);
+      box.setAttribute("rx", 9);
+      text.setAttribute("class", "graph-relation");
+      text.setAttribute("x", x);
+      text.setAttribute("y", y - 3);
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = label;
+      svg.append(box, text);
+    }
+
+    function appendGraphText(svg, x, y, label, className, anchor) {
+      const text = document.createElementNS(svg.namespaceURI, "text");
+      text.setAttribute("class", className);
+      text.setAttribute("x", x);
+      text.setAttribute("y", y);
+      text.setAttribute("text-anchor", anchor);
+      text.textContent = label;
+      svg.append(text);
+    }
+
+    function buildGraphSentenceList(facts) {
+      const list = document.createElement("ul");
+      list.className = "graph-sentence-list";
+      for (const fact of facts) {
+        const item = document.createElement("li");
+        item.textContent = fact.sentence || fact.path || fact.relation;
+        list.append(item);
+      }
+      return list;
+    }
+
+    function relationLabel(relation) {
+      return relation.replaceAll("_", " ").toLowerCase();
+    }
+
+    function compactLabel(label) {
+      return label.length > 10 ? `${label.slice(0, 9)}...` : label;
+    }
+
+    function renderSources(sourceList) {
+      sources.replaceChildren();
+      const groups = new Map();
+      for (const source of sourceList) {
+        if (!groups.has(source.document)) groups.set(source.document, []);
+        groups.get(source.document).push(source);
+      }
+
+      for (const [documentName, documentSources] of groups) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        const filename = document.createElement("strong");
+        const hasPdf = documentSources.some((source) => source.pdf_url);
+        const legalUnits = new Map();
+        const directSources = [];
+        details.className = "document-source";
+        details.open = true;
+        filename.textContent = displayDocumentName(documentName);
+        filename.title = documentName;
+        summary.append(filename);
+        if (hasPdf) {
+          const badge = document.createElement("span");
+          badge.className = "file-badge";
+          badge.textContent = "[PDF]";
+          summary.append(badge);
+        }
+        details.append(summary);
+
+        for (const source of documentSources) {
+          if (!source.article) {
+            directSources.push(source);
+            continue;
+          }
+          const unitLabel = `${source.article}${source.article_title ? ` (${source.article_title})` : ""}`;
+          if (!legalUnits.has(unitLabel)) legalUnits.set(unitLabel, []);
+          legalUnits.get(unitLabel).push(source);
+        }
+
+        if (directSources.length) {
+          const directList = document.createElement("div");
+          directList.className = "direct-source-list";
+          appendSourceChunks(directList, directSources);
+          details.append(directList);
+        }
+
+        for (const [unitLabel, unitSources] of legalUnits) {
+          const unitDetails = document.createElement("details");
+          const unitSummary = document.createElement("summary");
+          unitDetails.className = "legal-unit-source";
+          unitDetails.open = true;
+          unitSummary.textContent = unitLabel;
+          unitDetails.append(unitSummary);
+          appendSourceChunks(unitDetails, unitSources);
+          details.append(unitDetails);
+        }
+
+        sources.append(details);
+      }
+    }
+
+    function appendSourceChunks(parent, sourceList) {
+      for (const source of sourceList) {
+        const chunk = document.createElement("details");
+        const chunkSummary = document.createElement("summary");
+        const heading = document.createElement("div");
+        const text = document.createElement("p");
+        const actions = document.createElement("div");
+        const score = source.score === null
+          ? ""
+          : ` | Score: ${source.score.toFixed(3)}`;
+        chunk.className = "chunk-source";
+        chunk.id = `source-${source.citation}`;
+        chunkSummary.textContent = `${source.citation}. Chunk ${source.chunk}${score}`;
+        heading.className = "source-heading";
+        heading.textContent = source.heading_path || "";
+        text.textContent = sourceDisplayText(source);
+        actions.className = "source-actions";
+        if (source.pdf_url) {
+          const pdfLink = document.createElement("a");
+          pdfLink.href = source.pdf_url;
+          pdfLink.target = "_blank";
+          pdfLink.rel = "noopener";
+          pdfLink.textContent = "Open";
+          actions.append(pdfLink);
+        }
+        chunk.append(chunkSummary);
+        if (source.heading_path) chunk.append(heading);
+        chunk.append(text);
+        if (actions.childElementCount) chunk.append(actions);
+        parent.append(chunk);
+      }
+    }
+
+    function escapeRegExp(text) {
+      return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function displayDocumentName(name) {
+      return name.replace(/\.[^.]+$/, "");
+    }
+
+    function sourceDisplayText(source) {
+      if (!source.article) return source.text;
+      const article = escapeRegExp(source.article);
+      const title = source.article_title ? escapeRegExp(source.article_title) : "";
+      const headingPattern = title
+        ? new RegExp(`^${article}\\s*\\(${title}\\)\\s*`)
+        : new RegExp(`^${article}\\s*`);
+      return source.text.replace(headingPattern, "").trim() || source.text;
+    }
+
+    stopButton.addEventListener("click", () => {
+      stopActiveRequest("Stopped.");
+      answer.textContent = "Stopped.";
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (activeController) stopActiveRequest("Starting new request");
+      if (activeDotAnimation) clearInterval(activeDotAnimation);
+      const requestId = activeRequestId + 1;
+      activeRequestId = requestId;
+      const controller = new AbortController();
+      activeController = controller;
+      let dotCount = 1;
+      const waitingText = "Starting model, thinking";
+      answer.textContent = `${waitingText}.`;
+      setBusy(true);
+      tracePanel.style.display = "none";
+      trace.textContent = "";
+      graphFactsPanel.style.display = "none";
+      graphFacts.replaceChildren();
+      const dotAnimation = setInterval(() => {
+        if (requestId !== activeRequestId) return;
+        dotCount = dotCount === 3 ? 1 : dotCount + 1;
+        answer.textContent = `${waitingText}${".".repeat(dotCount)}`;
+      }, 500);
+      activeDotAnimation = dotAnimation;
+      sources.replaceChildren();
+
+      try {
+        const response = await fetch("/ask", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({question: question.value, strategy: strategy.value, category: category.value}),
+          signal: controller.signal
+        });
+        if (requestId !== activeRequestId) return;
+        if (!response.ok) throw new Error("Request failed");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let answerText = "";
+
+        while (true) {
+          const {value, done} = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (requestId !== activeRequestId) return;
+            if (!line) continue;
+            let message;
+            try {
+              message = JSON.parse(line);
+            } catch {
+              throw new Error("Received malformed response from server");
+            }
+            if (message.type === "sources") {
+              renderSources(message.sources);
+            } else if (message.type === "graph_facts") {
+              renderGraphFacts(message.graph_facts);
+            } else if (message.type === "trace") {
+              renderTrace(message.trace);
+            } else if (message.type === "token") {
+              clearInterval(dotAnimation);
+              answerText += message.text;
+              status.textContent = "Generating";
+              answer.textContent = answerText;
+            } else if (message.type === "error") {
+              clearInterval(dotAnimation);
+              answer.textContent = message.message || "Generation failed. Review the trace and cited sources.";
+              return;
+            }
+          }
+
+          if (done) break;
+        }
+
+        if (requestId !== activeRequestId) return;
+        if (!answerText.trim()) {
+          answer.textContent = "No generated answer was returned. Review the trace and cited sources.";
+          return;
+        }
+        renderAnswer(answerText);
+      } catch (error) {
+        if (error.name === "AbortError" || requestId !== activeRequestId) return;
+        answer.textContent = "The request failed. Check Neo4j, Ollama, and the server logs.";
+      } finally {
+        if (requestId === activeRequestId) {
+          clearInterval(dotAnimation);
+          activeDotAnimation = null;
+          activeController = null;
+          setBusy(false);
+        }
+      }
+    });
+  </script>
+</body>
+</html>

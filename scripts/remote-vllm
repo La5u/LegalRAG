@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Orchestrates the Slurm-managed vLLM inference server on the lab GPU box:
+# submit the job if one isn't already queued/running, wait for it to reach
+# RUNNING, open an SSH tunnel to its localhost-only port, and wait for vLLM
+# itself to answer. `up` runs the whole sequence; the rest are for manual use.
+set -euo pipefail
+
+REMOTE_HOST="${LEGALRAG_VLLM_REMOTE_HOST:-gpu.example.com}"
+REMOTE_USER="${LEGALRAG_VLLM_REMOTE_USER:-user}"
+REMOTE_DIR="${LEGALRAG_VLLM_REMOTE_DIR:-legalrag-infer}"
+REMOTE_PORT="${LEGALRAG_VLLM_REMOTE_PORT:-18080}"
+LOCAL_PORT="${LEGALRAG_VLLM_LOCAL_PORT:-8001}"
+JOB_NAME=legalrag_infer
+TUNNEL_PIDFILE="/tmp/legalrag-vllm-tunnel.pid"
+
+ssh_remote() {
+  ssh -o BatchMode=yes "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+}
+
+submit() {
+  ssh_remote "cd ${REMOTE_DIR} && ./submit_if_needed.sh ${REMOTE_PORT}"
+}
+
+status() {
+  ssh_remote "squeue -u \$USER -n ${JOB_NAME} -o '%i %T %M %L %R'"
+}
+
+wait_running() {
+  echo "Waiting for Slurm job '${JOB_NAME}' to reach RUNNING..." >&2
+  local state=""
+  for _ in $(seq 1 720); do
+    state="$(ssh_remote "squeue -h -u \$USER -n ${JOB_NAME} -o '%T'" | head -1)"
+    [[ "$state" == "RUNNING" ]] && { echo "Job is running." >&2; return 0; }
+    sleep 5
+  done
+  echo "Timed out waiting for job to run (last state: ${state:-none})." >&2
+  return 1
+}
+
+open_tunnel() {
+  if [[ -f "$TUNNEL_PIDFILE" ]] && kill -0 "$(cat "$TUNNEL_PIDFILE")" 2>/dev/null; then
+    echo "Tunnel already running (pid $(cat "$TUNNEL_PIDFILE"))." >&2
+    return 0
+  fi
+  ssh -o BatchMode=yes -N -L "${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT}" "${REMOTE_USER}@${REMOTE_HOST}" &
+  echo $! > "$TUNNEL_PIDFILE"
+  echo "Opened tunnel 127.0.0.1:${LOCAL_PORT} -> ${REMOTE_HOST}:127.0.0.1:${REMOTE_PORT} (pid $(cat "$TUNNEL_PIDFILE"))." >&2
+}
+
+wait_ready() {
+  echo "Waiting for vLLM at http://127.0.0.1:${LOCAL_PORT}/v1/models ..." >&2
+  for _ in $(seq 1 120); do
+    if curl -s -o /dev/null -m 2 "http://127.0.0.1:${LOCAL_PORT}/v1/models"; then
+      echo "vLLM is ready at http://127.0.0.1:${LOCAL_PORT}" >&2
+      return 0
+    fi
+    sleep 5
+  done
+  echo "Timed out waiting for vLLM to respond." >&2
+  return 1
+}
+
+stop_tunnel() {
+  if [[ -f "$TUNNEL_PIDFILE" ]]; then
+    kill "$(cat "$TUNNEL_PIDFILE")" 2>/dev/null || true
+    rm -f "$TUNNEL_PIDFILE"
+    echo "Tunnel stopped." >&2
+  fi
+}
+
+stop_job() {
+  ssh_remote "scancel -u \$USER -n ${JOB_NAME}"
+  echo "Requested cancellation of ${JOB_NAME}." >&2
+}
+
+case "${1:-}" in
+  submit) submit ;;
+  status) status ;;
+  wait) wait_running && open_tunnel && wait_ready ;;
+  tunnel) open_tunnel ;;
+  stop-tunnel) stop_tunnel ;;
+  stop-job) stop_job ;;
+  up) submit && wait_running && open_tunnel && wait_ready ;;
+  *)
+    echo "Usage: $0 {submit|status|wait|tunnel|stop-tunnel|stop-job|up}" >&2
+    exit 1
+    ;;
+esac

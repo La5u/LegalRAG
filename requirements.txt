@@ -1,0 +1,10 @@
+fastapi
+pydantic
+uvicorn[standard]
+sentence-transformers>=2.2
+neo4j
+httpx
+kiwipiepy
+pypdfium2
+pdfplumber
+pytest

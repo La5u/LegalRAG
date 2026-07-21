@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+source "$PROJECT_ROOT/scripts/lib/runtime.sh"
+source "$PROJECT_ROOT/scripts/lib/ollama.sh"
+source "$PROJECT_ROOT/scripts/lib/llm.sh"
+
+PYTHON="$(resolve_python)"
+OLLAMA_LOG="/tmp/legalrag-ollama.log"
+
+"$PROJECT_ROOT/scripts/index"
+ensure_llm "$PYTHON" "$OLLAMA_LOG"
+
+exec "$PYTHON" -m uvicorn backend.web:app --host 127.0.0.1 --port 8000
