@@ -8,6 +8,7 @@ htmlcov/
 .ruff_cache/
 .env
 .env.*
+network_config/backend.env
 evaluation/*results*.jsonl
 evaluation/*report*.json
 evaluation/generated_candidates.jsonl

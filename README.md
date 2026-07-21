@@ -224,6 +224,57 @@ LEGALRAG_VLLM_URL=http://127.0.0.1:8001 \
 ./scripts/dev
 ```
 
+## Remote Slurm-Managed vLLM Inference
+
+Instead of running the generation model locally, `scripts/remote-vllm` submits
+an on-demand vLLM inference server as a Slurm job on a shared lab GPU box,
+waits for it to start, and opens an SSH tunnel so the app can reach it at
+`http://127.0.0.1:8001` like any other vLLM endpoint.
+
+This exists because the GPU host is shared: only one Slurm GPU job can run
+at a time, so the server must be requested through `sbatch`/`squeue`, not
+launched directly, and it must give back the GPU when nobody is using it.
+
+Remote-side files live in `deploy/remote/` and are copied to
+`~/legalrag-infer/` on the GPU box:
+
+- `infer_server.sbatch` — Slurm batch script that starts vLLM bound to
+  `127.0.0.1` on the compute node, then watches its `/metrics` request
+  counter and self-cancels the job (`scancel`) after
+  `IDLE_TIMEOUT_SECONDS` (default 1800s) of no new requests, so the GPU
+  doesn't sit idle. It also carries a `--time=04:00:00` cap as a hard
+  backstop.
+- `submit_if_needed.sh` — idempotent `sbatch` wrapper; reuses an existing
+  queued/running `legalrag_infer` job instead of submitting a duplicate.
+
+Local usage:
+
+```bash
+./scripts/remote-vllm up      # submit if needed, wait for RUNNING, open tunnel, wait for vLLM
+./scripts/remote-vllm status  # squeue for the legalrag_infer job
+./scripts/remote-vllm stop-job     # scancel the Slurm job
+./scripts/remote-vllm stop-tunnel  # close the local SSH tunnel
+```
+
+To have `./scripts/run` / `./scripts/dev` do this automatically:
+
+```bash
+LEGALRAG_LLM_PROVIDER=vllm \
+LEGALRAG_VLLM_REMOTE=1 \
+LEGALRAG_GENERATION_MODEL=legalrag \
+./scripts/dev
+```
+
+Since Slurm queues the job automatically when the GPU is busy with someone
+else's work, `up` can be run any time — it just waits longer.
+
+Overridable env vars (defaults match the current lab box):
+`LEGALRAG_VLLM_REMOTE_HOST` (`gpu.example.com`),
+`LEGALRAG_VLLM_REMOTE_USER` (`user`),
+`LEGALRAG_VLLM_REMOTE_DIR` (`legalrag-infer`),
+`LEGALRAG_VLLM_REMOTE_PORT` (`18080`),
+`LEGALRAG_VLLM_LOCAL_PORT` (`8001`).
+
 ## Configuration
 
 Default embedding model:
