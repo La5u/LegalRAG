@@ -114,7 +114,11 @@ async def stream_answer(
     symbolic_context: str | None = None,
 ) -> None:
     if LLM_PROVIDER in {"vllm", "openai_compatible"}:
-        base_url = VLLM_URL if LLM_PROVIDER == "vllm" else LLM_BASE_URL
+        base_url = (
+            f"{VLLM_URL.rstrip('/')}/v1"
+            if LLM_PROVIDER == "vllm"
+            else LLM_BASE_URL
+        )
         if not base_url:
             raise ValueError("LEGALRAG_LLM_BASE_URL is required")
         headers = (
