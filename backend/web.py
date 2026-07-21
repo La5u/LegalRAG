@@ -1,19 +1,16 @@
 import asyncio
 import json
-import re
-import secrets
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend import config
-from backend.document_types import document_type_from_source_path
 from backend.rag import LegalRAG
+from backend.llm import close_http_client
 from backend.retrieval import RetrievalUnavailable
 from backend.routing import route_reason
 
@@ -32,11 +29,6 @@ CATEGORIES = [
 ]
 
 
-def _normalized_document_stem(path: Path) -> str:
-    stem = re.sub(r"\([^)]*\)", "", path.stem).strip()
-    return stem.casefold()
-
-
 def _safe_raw_document_path(source_path: str) -> Path | None:
     path = (PROJECT_ROOT / source_path).resolve()
     try:
@@ -46,39 +38,74 @@ def _safe_raw_document_path(source_path: str) -> Path | None:
     return path
 
 
-def _matching_pdf_path(path: Path) -> Path | None:
-    if path.suffix.lower() == ".pdf" and path.exists():
-        return path
-
-    normalized_stem = _normalized_document_stem(path)
-    for candidate in path.parent.glob("*.pdf"):
-        if _normalized_document_stem(candidate) == normalized_stem:
-            return candidate
-    return None
-
-
-def document_pdf_url(source_path: str | None) -> str | None:
-    if not source_path:
+def document_pdf_url(
+    source_path: str | None, pdf_path: str | None = None,
+) -> str | None:
+    selected_path = pdf_path
+    if not selected_path and source_path and source_path.casefold().endswith(".pdf"):
+        selected_path = source_path
+    if not selected_path:
         return None
 
-    path = _safe_raw_document_path(source_path)
+    path = _safe_raw_document_path(selected_path)
     if path is None:
         return None
 
-    pdf_path = _matching_pdf_path(path)
-    if pdf_path is None:
+    if path.suffix.casefold() != ".pdf" or not path.is_file():
         return None
 
-    relative_path = pdf_path.relative_to(RAW_DOCUMENTS_PATH).as_posix()
-    return f"/documents/raw/{quote(relative_path, safe='/')}"
+    relative_path = path.relative_to(RAW_DOCUMENTS_PATH).as_posix()
+    # A relative URL works both at the local root and behind a /legal-rag proxy.
+    return f"documents/raw/{quote(relative_path, safe='/')}"
 
 
-def graph_fact_rows(chunks) -> list[dict]:
-    rows = []
-    for chunk in chunks:
-        for fact in chunk.meta.get("graph_facts", []):
-            rows.append(fact.to_response())
-    return rows
+def graph_fact_rows(facts) -> list[dict]:
+    return [
+        {
+            "document": fact.document,
+            "raw_document": fact.source_path,
+            "chunk": fact.chunk,
+            "article": fact.article,
+            "relation": fact.relation,
+            "path": fact.path,
+            "sentence": fact.sentence,
+            "score": fact.score,
+        }
+        for fact in facts
+    ]
+
+
+def source_rows(chunks) -> list[dict]:
+    return [
+        {
+            "document": chunk.meta.get("document_name", ""),
+            "raw_document": chunk.meta.get("source_path", ""),
+            "document_title": chunk.meta.get("document_title"),
+            "version_label": chunk.meta.get("version_label"),
+            "document_type": chunk.meta.get("document_type"),
+            "source_url": chunk.meta.get("source_url"),
+            "page_number": chunk.meta.get("page_number"),
+            "pdf_url": document_pdf_url(
+                chunk.meta.get("source_path"), chunk.meta.get("pdf_path")
+            ),
+            "citation": citation_number,
+            "chunk": chunk.meta.get("chunk_number"),
+            "score": chunk.score,
+            "text": chunk.content,
+            "heading_path": chunk.meta.get("heading_path"),
+            "article": chunk.meta.get("article_number"),
+            "article_title": chunk.meta.get("article_title"),
+            "legal_unit_kind": chunk.meta.get("legal_unit_kind"),
+            "legal_unit_number": chunk.meta.get("legal_unit_number"),
+            "legal_unit_title": chunk.meta.get("legal_unit_title"),
+            "specific_citation": chunk.meta.get("specific_citation"),
+        }
+        for citation_number, chunk in enumerate(chunks, start=1)
+    ]
+
+
+def stream_event(event_type: str, **payload) -> str:
+    return json.dumps({"type": event_type, **payload}) + "\n"
 
 
 def add_trace_citations(
@@ -90,7 +117,7 @@ def add_trace_citations(
         return None
 
     citation_by_source = {
-        (source["raw_document"], source["chunk"]): source["citation"]
+        (source["document"], source["chunk"]): source["citation"]
         for source in sources
     }
     trace = dict(trace_payload)
@@ -101,12 +128,24 @@ def add_trace_citations(
         }
         for item in trace.get("important_evidence", [])
     ]
+    trace["privacy_checklist"] = [
+        {
+            **check,
+            "citation": citation_by_source.get(
+                (
+                    (check.get("evidence") or {}).get("document"),
+                    (check.get("evidence") or {}).get("chunk"),
+                )
+            ),
+        }
+        for check in trace.get("privacy_checklist", [])
+    ]
     return compact_trace(trace, category)
 
 
 def compact_trace(trace: dict, category: str) -> dict:
     query_type = trace.get("query_type")
-    return {
+    compact = {
         "query_type": query_type,
         "category": category,
         "route_reason": route_reason(query_type),
@@ -119,6 +158,19 @@ def compact_trace(trace: dict, category: str) -> dict:
             "answer_type": trace.get("conclusion", {}).get("answer_type"),
         },
     }
+    if trace.get("workflow") == "privacy_compliance":
+        compact["workflow"] = trace["workflow"]
+        compact["privacy_checklist"] = [
+            {
+                "issue": check.get("issue"),
+                "rule_status": check.get("rule_status"),
+                "fact_status": check.get("fact_status"),
+                "citation": check.get("citation"),
+            }
+            for check in trace.get("privacy_checklist", [])
+        ]
+        compact["missing_facts"] = trace.get("missing_facts", [])
+    return compact
 
 
 @asynccontextmanager
@@ -128,6 +180,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         app.state.rag.close()
+        await close_http_client()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -136,7 +189,10 @@ app = FastAPI(lifespan=lifespan)
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     strategy: Literal["vector", "graph", "neuro_symbolic"] = "graph"
-    category: str = "auto"
+    category: Literal[
+        "auto", "all", "statute", "regulation", "precedent",
+        "constitutional_decision", "contract", "guidance", "qna",
+    ] = "auto"
 
 
 def get_rag(request: Request) -> LegalRAG:
@@ -146,34 +202,18 @@ def get_rag(request: Request) -> LegalRAG:
     return rag
 
 
-def require_proxy_secret(
-    x_internal_proxy_secret: Annotated[str | None, Header()] = None,
-) -> None:
-    """Reject requests missing the shared secret set by the trusted frontend proxy.
-
-    No-op when LEGALRAG_PROXY_SECRET is unset, so local dev without the
-    reverse proxy in front of it keeps working unauthenticated.
-    """
-    if not config.PROXY_SHARED_SECRET:
-        return
-    if not x_internal_proxy_secret or not secrets.compare_digest(
-        x_internal_proxy_secret, config.PROXY_SHARED_SECRET
-    ):
-        raise HTTPException(status_code=403, detail="Forbidden.")
-
-
 @app.get("/")
 def home() -> FileResponse:
     return FileResponse(PROJECT_ROOT / "frontend" / "index.html")
 
 
-@app.get("/documents", dependencies=[Depends(require_proxy_secret)])
+@app.get("/documents")
 def list_documents(rag_system: Annotated[LegalRAG, Depends(get_rag)]) -> dict:
     return {"documents": rag_system.list_documents()}
 
 
-@app.get("/documents/raw/{document_path:path}", dependencies=[Depends(require_proxy_secret)])
-def raw_document(document_path: str) -> FileResponse:
+@app.get("/documents/raw/{document_path:path}")
+def raw_document(document_path: str, download: bool = False) -> FileResponse:
     path = (RAW_DOCUMENTS_PATH / document_path).resolve()
     try:
         path.relative_to(RAW_DOCUMENTS_PATH)
@@ -186,60 +226,38 @@ def raw_document(document_path: str) -> FileResponse:
         path,
         media_type="application/pdf",
         filename=path.name,
-        content_disposition_type="inline",
+        content_disposition_type="attachment" if download else "inline",
     )
 
 
-@app.post("/ask", dependencies=[Depends(require_proxy_secret)])
+@app.post("/ask")
 async def ask(
     request: Question,
     rag_system: Annotated[LegalRAG, Depends(get_rag)],
 ) -> StreamingResponse:
     try:
-        chunks = rag_system.retrieve(
-            request.question, strategy=request.strategy, category=request.category
+        result = await asyncio.to_thread(
+            rag_system.retrieve,
+            request.question,
+            strategy=request.strategy,
+            category=request.category,
         )
     except RetrievalUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
     async def stream():
-        trace_payload = next(
-            (
-                chunk.meta.get("symbolic_trace")
-                for chunk in chunks
-                if chunk.meta.get("symbolic_trace")
-            ),
-            None,
-        )
-        source_chunks = chunks
-        sources = [
-            {
-                "document": chunk.meta.get("document_name", ""),
-                "raw_document": chunk.meta.get("document_name", ""),
-                "pdf_url": document_pdf_url(chunk.meta.get("source_path")),
-                "citation": citation_number,
-                "chunk": chunk.meta.get("chunk_number"),
-                "score": chunk.score,
-                "text": chunk.content,
-                "heading_path": chunk.meta.get("heading_path"),
-                "article": chunk.meta.get("article_number"),
-                "article_title": chunk.meta.get("article_title"),
-                "legal_unit_kind": chunk.meta.get("legal_unit_kind"),
-                "legal_unit_number": chunk.meta.get("legal_unit_number"),
-                "legal_unit_title": chunk.meta.get("legal_unit_title"),
-                "specific_citation": chunk.meta.get("specific_citation"),
-            }
-            for citation_number, chunk in enumerate(source_chunks, start=1)
-        ]
-        graph_facts = graph_fact_rows(chunks)
+        trace_payload = result.symbolic_trace
+        source_chunks = result.evidence
+        sources = source_rows(source_chunks)
+        graph_facts = graph_fact_rows(result.graph_facts)
         trace_payload = add_trace_citations(trace_payload, sources, request.category)
-        yield json.dumps({"type": "sources", "sources": sources}) + "\n"
+        yield stream_event("sources", sources=sources)
         if graph_facts:
-            yield json.dumps({"type": "graph_facts", "graph_facts": graph_facts}) + "\n"
+            yield stream_event("graph_facts", graph_facts=graph_facts)
         if trace_payload:
-            yield json.dumps({"type": "trace", "trace": trace_payload}) + "\n"
+            yield stream_event("trace", trace=trace_payload)
 
-        tokens = asyncio.Queue()
+        tokens = asyncio.Queue(maxsize=32)
 
         async def send_token(token: str) -> None:
             await tokens.put(token)
@@ -248,7 +266,7 @@ async def ask(
             try:
                 await rag_system.generate_async(
                     request.question,
-                    source_chunks,
+                    result,
                     send_token,
                 )
             except Exception as error:
@@ -264,13 +282,16 @@ async def ask(
                 if token is None:
                     break
                 if isinstance(token, Exception):
-                    yield json.dumps({"type": "error"}) + "\n"
+                    yield stream_event(
+                        "error",
+                        message="Generation failed. Review the cited sources.",
+                    )
                     await generation
                     return
-                yield json.dumps({"type": "token", "text": token}) + "\n"
+                yield stream_event("token", text=token)
 
             await generation
-            yield json.dumps({"type": "done"}) + "\n"
+            yield stream_event("done")
         finally:
             if not generation.done():
                 generation.cancel()

@@ -5,6 +5,10 @@ from kiwipiepy import Kiwi
 from backend.constants import TOKEN_PATTERN
 
 
+def deduplicate(items):
+    return list(dict.fromkeys(items))
+
+
 SENTENCE_PATTERN = re.compile(
     r"[^.!?。！？\n]+?(?:[.!?。！？]|(?:습니다|합니다|된다|한다|없다|있다|이다|니다|까|함|음|됨|다|요|죠)(?=\s+|$))"
 )
@@ -23,7 +27,26 @@ def get_kiwi() -> Kiwi:
 
 
 def extract_tokens(query: str) -> list[str]:
-    return list(dict.fromkeys(TOKEN_PATTERN.findall(query)))
+    return deduplicate(TOKEN_PATTERN.findall(query))
+
+
+def query_terms(
+    query: str,
+    *,
+    initial_terms: list[str] | None = None,
+    ignored_terms: set[str] | frozenset[str] = frozenset(),
+    max_terms: int | None = None,
+    min_length: int = 1,
+    strip_particles: bool = False,
+) -> list[str]:
+    terms = []
+    for term in (initial_terms or []) + extract_tokens(query):
+        cleaned = strip_korean_particle(term) if strip_particles else term
+        if len(cleaned) < min_length or cleaned.casefold() in ignored_terms:
+            continue
+        terms.append(cleaned)
+    terms = deduplicate(terms)
+    return terms[:max_terms] if max_terms is not None else terms
 
 
 def strip_korean_particle(term: str) -> str:

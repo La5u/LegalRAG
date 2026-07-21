@@ -5,14 +5,6 @@ ARTICLE_PATTERN = re.compile(r"제\d+조(?:의\d+)?")
 CITATION_PATTERN = re.compile(
     r"제\d+조(?:의\d+)?(?:제\d+(?:항|호|목)|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])*"
 )
-FULL_CITATION_PATTERN = re.compile(
-    r"(?:[「\"](?P<law_name>[^」\"]+)[」\"]\s*)?"
-    r"(?P<article>제\d+조(?:의\d+)?)"
-    r"(?P<clause>제\d+(?:항|호|목)|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])?"
-)
-LOCAL_CLAUSE_PATTERN = re.compile(
-    r"(?P<clause>제\d+(?:항|호|목)|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[가-하]목)"
-)
 CIRCLED_CLAUSE_MARKS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 TOKEN_PATTERN = re.compile(r"[가-힣A-Za-z0-9·ㆍ]{2,}")
 CONCEPT_STOP_TERMS = {
@@ -55,7 +47,6 @@ CONCEPT_STOP_TERMS = {
     "제4호",
     "제5호",
 }
-CONCEPT_STOP_TERMS_LIST = sorted(CONCEPT_STOP_TERMS)
 GRAPH_FACT_ID_PREFIX = "graph-fact::"
 QUERY_STOP_TERMS = {
     "what",
@@ -112,4 +103,6 @@ STRUCTURE_PATTERNS = [
     ("item", re.compile(r"^(?P<number>\d+\.)\s*(?P<title>.*)")),
     ("subitem", re.compile(r"^(?P<number>[가-하]\.)\s*(?P<title>.*)")),
 ]
-STRUCTURE_KINDS = list(dict.fromkeys(kind for kind, _pattern in STRUCTURE_PATTERNS))
+from backend.text import deduplicate
+
+STRUCTURE_KINDS = deduplicate(kind for kind, _pattern in STRUCTURE_PATTERNS)

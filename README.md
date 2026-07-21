@@ -26,7 +26,7 @@ local LLM answer with citations
 
 - Linux
 - Python 3.11 or newer
-- Docker with Compose
+- Docker with Compose, or Podman with Compose
 - Neo4j 5.26 Community
 - Ollama
 
@@ -51,6 +51,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
+
+`requirements.txt` pins the tested direct dependencies and uses the PyTorch CPU
+wheel index, which avoids pulling NVIDIA CUDA packages on CPU-only servers.
 
 Download local models once:
 
@@ -79,6 +82,17 @@ Lower-level commands:
 ./scripts/dev
 ```
 
+Use Podman for the local Neo4j container:
+
+```bash
+LEGALRAG_CONTAINER_ENGINE=podman ./scripts/index
+LEGALRAG_CONTAINER_ENGINE=podman ./scripts/dev
+LEGALRAG_CONTAINER_ENGINE=podman ./scripts/run
+```
+
+The Podman script path uses `podman run` directly for Neo4j, so it does not
+depend on a working `podman compose` provider.
+
 The default embedding model is `intfloat/multilingual-e5-small`. Use the same
 embedding model for indexing and app runtime.
 
@@ -86,6 +100,17 @@ To use BGE-M3 instead:
 
 ```bash
 LEGALRAG_EMBEDDING_MODEL="BAAI/bge-m3" ./scripts/run
+```
+
+To use an OpenAI-compatible hosted generator, keep the API key in the
+environment rather than a repository file:
+
+```bash
+export LEGALRAG_LLM_PROVIDER="openai_compatible"
+export LEGALRAG_LLM_BASE_URL="https://opencode.ai/zen/go/v1"
+export LEGALRAG_LLM_API_KEY="..."
+export LEGALRAG_GENERATION_MODEL="deepseek-v4-flash"
+./scripts/dev
 ```
 
 `scripts/index` only starts Neo4j and indexes documents. `scripts/dev` starts
@@ -96,20 +121,19 @@ startup.
 Run the local smoke checks after code changes:
 
 ```bash
-LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m scripts.smoke
+LEGALRAG_INTEGRATION=1 python -m pytest -q tests/test_integration_smoke.py
 ```
 
 Common evaluation runs:
 
 ```bash
-./scripts/eval curated retrieval
-./scripts/eval codex retrieval
+./scripts/eval retrieval
 python -m evaluation.report --results /tmp/legalrag-eval/multilingual-e5-small_curated_retrieval.jsonl
 ```
 
 ## Docker Hosting Workflow
 
-Docker is the deployment path, not the editing workflow. Keep working in this
+Docker or Podman is the deployment path, not the editing workflow. Keep working in this
 repository locally, test changes, commit them, then rebuild and restart the
 container on the server.
 
@@ -127,6 +151,14 @@ sudo docker compose build app
 sudo docker compose up -d
 ```
 
+Podman server update:
+
+```bash
+git pull
+podman compose build app
+podman compose up -d
+```
+
 The running website uses the code copied into the Docker image at build time.
 Local edits do not appear on the website until the server rebuilds the image
 and restarts the app container. Neo4j data stays in the Docker volume, so
@@ -134,27 +166,10 @@ replacing the app container does not delete the indexed database.
 
 ## How To Test
 
-Quick backend smoke test:
+Neo4j integration checks:
 
 ```bash
-LEGALRAG_EMBEDDING_MODEL="intfloat/multilingual-e5-small" python -m scripts.smoke
-```
-
-Faster variants:
-
-```bash
-python -m scripts.smoke --compile-only
-python -m scripts.smoke --skip-write
-python -m scripts.smoke --skip-lookups
-```
-
-Expected output:
-
-```text
-PASS backend modules compile
-PASS Neo4j constraints exist
-PASS temporary Document -> LegalUnit -> SourceChunk tree writes and cleans up
-PASS 10 article graph lookups pass
+LEGALRAG_INTEGRATION=1 python -m pytest -q tests/test_integration_smoke.py
 ```
 
 Browser test:
@@ -180,6 +195,21 @@ source .venv/bin/activate
 python -m uvicorn backend.web:app --host 127.0.0.1 --port 8000
 ```
 
+With Podman, start Neo4j with:
+
+```bash
+podman volume exists legalrag_neo4j_data || podman volume create legalrag_neo4j_data
+podman volume exists legalrag_neo4j_logs || podman volume create legalrag_neo4j_logs
+podman run -d \
+  --name legalrag-neo4j \
+  -p 7474:7474 \
+  -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-legalrag-password} \
+  -v legalrag_neo4j_data:/data \
+  -v legalrag_neo4j_logs:/logs \
+  neo4j:5.26-community
+```
+
 vLLM startup:
 
 ```bash
@@ -193,57 +223,6 @@ LEGALRAG_GENERATION_MODEL=Qwen/Qwen3-32B \
 LEGALRAG_VLLM_URL=http://127.0.0.1:8001 \
 ./scripts/dev
 ```
-
-## Remote Slurm-Managed vLLM Inference
-
-Instead of running the generation model locally, `scripts/remote-vllm` submits
-an on-demand vLLM inference server as a Slurm job on a shared lab GPU box,
-waits for it to start, and opens an SSH tunnel so the app can reach it at
-`http://127.0.0.1:8001` like any other vLLM endpoint.
-
-This exists because the GPU host is shared: only one Slurm GPU job can run
-at a time, so the server must be requested through `sbatch`/`squeue`, not
-launched directly, and it must give back the GPU when nobody is using it.
-
-Remote-side files live in `deploy/remote/` and are copied to
-`~/legalrag-infer/` on the GPU box:
-
-- `infer_server.sbatch` — Slurm batch script that starts vLLM bound to
-  `127.0.0.1` on the compute node, then watches its `/metrics` request
-  counter and self-cancels the job (`scancel`) after
-  `IDLE_TIMEOUT_SECONDS` (default 1800s) of no new requests, so the GPU
-  doesn't sit idle. It also carries a `--time=04:00:00` cap as a hard
-  backstop.
-- `submit_if_needed.sh` — idempotent `sbatch` wrapper; reuses an existing
-  queued/running `legalrag_infer` job instead of submitting a duplicate.
-
-Local usage:
-
-```bash
-./scripts/remote-vllm up      # submit if needed, wait for RUNNING, open tunnel, wait for vLLM
-./scripts/remote-vllm status  # squeue for the legalrag_infer job
-./scripts/remote-vllm stop-job     # scancel the Slurm job
-./scripts/remote-vllm stop-tunnel  # close the local SSH tunnel
-```
-
-To have `./scripts/run` / `./scripts/dev` do this automatically:
-
-```bash
-LEGALRAG_LLM_PROVIDER=vllm \
-LEGALRAG_VLLM_REMOTE=1 \
-LEGALRAG_GENERATION_MODEL=legalrag \
-./scripts/dev
-```
-
-Since Slurm queues the job automatically when the GPU is busy with someone
-else's work, `up` can be run any time — it just waits longer.
-
-Overridable env vars (defaults match the current lab box):
-`LEGALRAG_VLLM_REMOTE_HOST` (`gpu.example.com`),
-`LEGALRAG_VLLM_REMOTE_USER` (`user`),
-`LEGALRAG_VLLM_REMOTE_DIR` (`legalrag-infer`),
-`LEGALRAG_VLLM_REMOTE_PORT` (`18080`),
-`LEGALRAG_VLLM_LOCAL_PORT` (`8001`).
 
 ## Configuration
 
@@ -313,6 +292,9 @@ docker run --rm \
 docker compose start neo4j
 ```
 
+With Podman, use `podman compose` and `podman run` for the same backup and
+restore commands.
+
 Restore that backup into the same volume:
 
 ```bash
@@ -326,11 +308,12 @@ docker compose start neo4j
 
 ## Documents
 
-Put Korean law HWPX files, selectable-text PDFs, or plain UTF-8 TXT files under
-`documents/raw/`. The indexer reads this folder recursively and ignores
-`documents/excluded/`. The current MVP assumes one file per law or source
-document. Separate TXT article-title exports are not needed when the HWPX export
-already includes article titles and lists.
+Register Korean law HWPX files, selectable-text PDFs, or plain UTF-8 TXT files in
+`documents/source_manifest.csv`, and place the assets under `documents/raw/`.
+The manifest controls inclusion and supplies source metadata. HWPX and PDF
+assets for the same legal version are treated as representations of one logical
+document; HWPX supplies searchable text and the matching PDF supplies the
+browser source when both exist.
 
 PDF extraction uses `pypdfium2` by default. The loader also extracts with
 `pdfplumber` and chooses that result when the PDFium text looks weak or when
@@ -338,11 +321,10 @@ pdfplumber preserves more legal text, such as table-heavy text or Hanja.
 
 Use `./scripts/index` when documents, embedding model, or chunking settings change.
 Existing unchanged documents are skipped using Neo4j metadata: source path, file
-timestamp, embedding model, chunking version, and word limit.
-
-The current chunking version is `word-block-v14-boundary-triples`. If this value changes
-in code (`CHUNKING_VERSION` in `backend/config.py`), the next `./scripts/index` run
-rebuilds affected documents.
+timestamp, embedding model, automatic indexing-pipeline fingerprint, and word
+limit. The fingerprint is calculated from the parser, chunker, metadata, and
+graph-indexing code, so relevant code changes trigger rebuilding without a
+manual version edit.
 
 ## Retrieval Strategies
 
@@ -355,12 +337,12 @@ The `/ask` endpoint accepts an optional strategy in the JSON body:
 Available strategies:
 
 - `vector`: return only the top vector-search chunks.
-- `graph`: GraphRAG mode. Start from vector hits, add nearby chunk parts, add
-  graph facts from extracted concepts and relationships, and expand through
+- `graph`: GraphRAG mode. Combine vector and legal-text candidates, add nearby
+  chunk parts, expose an extracted graph relation as cited evidence, and expand through
   `LegalUnit` nodes only when the question explicitly asks for article or
   section-level context.
-- `neuro_symbolic`: Neuro-Symbolic mode. Start with GraphRAG evidence, then add
-  an explicit symbolic reasoning trace that lists matched concepts, checked
+- `neuro_symbolic`: Neuro-Symbolic mode. Start with GraphRAG evidence, then use
+  an explicit symbolic trace to prioritize supporting evidence and list matched concepts, checked
   definitions, legal relations, exceptions, conditions, supporting chunks, and
   graph paths.
 
@@ -377,9 +359,6 @@ The browser app labels these modes as `Vector`, `GraphRAG`, and
   `Term -> Definition -> LegalUnit`, with `SUPPORTED_BY` source evidence
 - Kiwi-assisted legal relationship graph:
   `Concept -[:HAS_DUTY|MAY|PROHIBITS|MUST_NOTIFY|MAY_REQUEST]-> Concept`
-- Legal connection graph:
-  `Chunk -[:CITES]-> Citation -[:REFERS_TO]-> Document` and
-  `Chunk -[:CITES]-> Citation -[:REFERS_TO_ARTICLE]-> LegalUnit`
 - Exception edges between concepts: `Concept -[:EXCEPTION_TO]-> Concept`
 - Neuro-symbolic trace categorizes retrieved evidence into definitions,
   obligations, prohibitions, permissions, exceptions, and conditions
@@ -393,9 +372,8 @@ The browser app labels these modes as `Vector`, `GraphRAG`, and
 
 - **Standalone Neo4j GraphRAG** — Haystack was removed because only three
   helper types were used from it, not pipelines or document stores.
-- **Deterministic graph construction** — Legal-unit, definition, case, and
-  citation nodes are built from text structure patterns and regex, not from
-  an LLM.
+- **Deterministic graph construction** — Legal-unit, definition, and case
+  nodes are built from text structure patterns and regex, not from an LLM.
 - **Neuro-symbolic traces** — The `neuro_symbolic` retrieval strategy adds a
   symbolic reasoning trace (definitions checked, relations found, conclusion
   type) as prompt context for the LLM.

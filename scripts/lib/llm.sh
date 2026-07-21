@@ -4,10 +4,10 @@ ensure_llm() {
 
   local provider="${LEGALRAG_LLM_PROVIDER:-ollama}"
   if [[ "$provider" == "vllm" ]]; then
-    if [[ "${LEGALRAG_VLLM_REMOTE:-0}" == "1" ]]; then
-      "$PROJECT_ROOT/scripts/remote-vllm" up
-    fi
     wait_vllm "$python"
+    return
+  fi
+  if [[ "$provider" == "openai_compatible" ]]; then
     return
   fi
 

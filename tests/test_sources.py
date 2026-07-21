@@ -1,15 +1,12 @@
 import pytest
 
 from backend.sources import (
-    CONTRACT_TERMS,
-    DOCUMENT_SUMMARY_TERMS,
-    SOURCE_ALIASES,
+    SourceMatcher,
     explicit_source_terms,
     is_case_query,
     is_contract_query,
     is_document_summary_query,
     normalize_source_text,
-    source_name_terms,
     source_name_overlap,
 )
 
@@ -21,7 +18,7 @@ class TestNormalizeSourceText:
     @pytest.mark.parametrize(
         "text, expected",
         [
-            ("documents/raw/statutes/개인정보보호법.pdf", "statutes/개인정보보호법"),
+            ("documents/raw/statutes/개인정보보호법.pdf", "statutes개인정보보호법"),
             ("개인정보보호법(법률).hwpx", "개인정보보호법법률"),
             ("  hello   world  ", "helloworld"),
             ("documents/raw/test.pdf", "test"),
@@ -41,21 +38,114 @@ class TestNormalizeSourceText:
         assert result == "helloworldtest"
 
 
-# ---------------------------------------------------------------------------
-# source_name_terms — extract normalized terms from name/path
-# ---------------------------------------------------------------------------
-class TestSourceNameTerms:
-    def test_extracts_from_name(self):
-        terms = source_name_terms("개인정보보호법(법률)", "documents/raw/statutes/개인정보보호법(법률).pdf")
-        assert any("개인정보보호법" in t for t in terms)
+def test_new_law_alias_targets_statute_not_similar_contract():
+    records = [
+        {
+            "name": "상가건물 임대차보호법(법률)",
+            "source_path": "documents/raw/statutes/상가건물 임대차보호법(법률).hwpx",
+        },
+        {
+            "name": "상가건물 임대차 표준계약서",
+            "source_path": "documents/raw/contracts/상가건물 임대차 표준계약서.pdf",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
 
-    def test_filters_short_terms(self):
-        terms = source_name_terms("abc", "short")
-        assert all(len(t) >= 8 for t in terms)
+    assert matcher.constraints("상가임대차법의 갱신 요건") == [
+        "documents/raw/statutes/상가건물 임대차보호법(법률).hwpx"
+    ]
 
-    def test_deduplicates(self):
-        terms = source_name_terms("개인정보보호법", "documents/raw/statutes/개인정보보호법.pdf")
-        assert len(terms) == len(set(terms))
+
+def test_longest_source_alias_keeps_explicit_standard_contract():
+    records = [
+        {
+            "name": "주택임대차보호법(법률)",
+            "source_path": "documents/raw/statutes/주택임대차보호법(법률).hwpx",
+        },
+        {
+            "name": "주택임대차 표준계약서",
+            "source_path": "documents/raw/contracts/주택임대차 표준계약서.pdf",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("주택임대차 표준계약서의 임대인 의무") == [
+        "documents/raw/contracts/주택임대차 표준계약서.pdf"
+    ]
+
+
+def test_full_decree_name_overrides_shorter_act_alias():
+    records = [
+        {
+            "name": "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법",
+            "source_path": "documents/raw/statutes/인공지능 기본법.hwpx",
+        },
+        {
+            "name": "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법 시행령",
+            "source_path": "documents/raw/regulations/인공지능 기본법 시행령.hwpx",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints(
+        "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법 시행령에 따르면"
+    ) == ["documents/raw/regulations/인공지능 기본법 시행령.hwpx"]
+
+
+def test_short_canonical_statute_title_is_recognized_without_manual_alias():
+    records = [{
+        "title": "민사소송법",
+        "name": "민사소송법(법률)(제19516호).hwpx",
+        "source_path": "documents/raw/statutes/민사소송법(법률)(제19516호).hwpx",
+    }]
+
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("민사소송법 제24조의 예외는?") == [
+        records[0]["source_path"]
+    ]
+
+
+def test_guidance_alias_beats_broader_statute_alias():
+    records = [
+        {
+            "name": "주택임대차보호법(법률).hwpx",
+            "source_path": "documents/raw/statutes/주택임대차보호법.hwpx",
+        },
+        {
+            "name": "주택임대차_생활법령_QA.pdf",
+            "source_path": "documents/raw/qna/주택임대차_생활법령_QA.pdf",
+        },
+    ]
+
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("주택임대차 안내서의 주요 내용은?") == [
+        records[1]["source_path"]
+    ]
+
+
+def test_lease_scenario_routes_to_law_not_contract():
+    records = [
+        {
+            "name": "상가건물 임대차보호법(법률)",
+            "source_path": "documents/raw/statutes/상가건물 임대차보호법(법률).hwpx",
+        },
+        {
+            "name": "상가건물 임대차보호법 시행령",
+            "source_path": "documents/raw/regulations/상가건물 임대차보호법 시행령.hwpx",
+        },
+        {
+            "name": "상가건물 표준임대차계약서",
+            "source_path": "documents/raw/contracts/상가건물_임대차_표준계약서.pdf",
+        },
+    ]
+    matcher = SourceMatcher(lambda _query, **_params: records)
+
+    assert matcher.constraints("상가 임차인의 계약갱신 요구는 언제까지인가요?") == [
+        records[0]["source_path"],
+        records[1]["source_path"],
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +246,75 @@ class TestIsCaseQuery:
 
     def test_constitutional_decision_source_type(self):
         assert is_case_query("일반 질문", ["documents/raw/constitutional_decisions/헌재.pdf"])
+
+
+# ---------------------------------------------------------------------------
+# SourceMatcher — cached source constraints
+# ---------------------------------------------------------------------------
+class TestSourceMatcher:
+    def test_exact_alias_does_not_expand_to_similarly_named_contracts(self):
+        records = [
+            {
+                "name": "주택임대차 표준계약서(원본게시용).pdf",
+                "source_path": "documents/raw/contracts/주택임대차 표준계약서(원본게시용).pdf",
+            },
+            {
+                "name": "상가건물_임대차_표준계약서.pdf",
+                "source_path": "documents/raw/contracts/상가건물_임대차_표준계약서.pdf",
+            },
+        ]
+        matcher = SourceMatcher(lambda _query, **_parameters: records)
+
+        matches = matcher.constraints(
+            "주택임대차 표준계약서에서 임차인은 언제 차임을 지급하나요?"
+        )
+
+        assert matches == [
+            "documents/raw/contracts/주택임대차 표준계약서(원본게시용).pdf"
+        ]
+
+    def test_category_constraints_use_indexed_source_types(self):
+        records = [
+            {
+                "name": "법.pdf",
+                "source_path": "documents/raw/statutes/법.pdf",
+            },
+            {
+                "name": "판례.pdf",
+                "source_path": "documents/raw/precedents/판례.pdf",
+            },
+        ]
+        matcher = SourceMatcher(lambda _query, **_parameters: records)
+
+        assert matcher.category_constraints("statute") == [
+            "documents/raw/statutes/법.pdf"
+        ]
+
+    def test_invalidate_refreshes_document_index(self):
+        records = [
+            [
+                {
+                    "name": "민법(법률)(제21454호)(20260317).hwpx",
+                    "source_path": "documents/raw/statutes/민법(법률)(제21454호)(20260317).hwpx",
+                }
+            ],
+            [
+                {
+                    "name": "형법(법률)(제21450호)(20260312).hwpx",
+                    "source_path": "documents/raw/statutes/형법(법률)(제21450호)(20260312).hwpx",
+                }
+            ],
+        ]
+
+        def run_read(_query, **_parameters):
+            return records.pop(0)
+
+        matcher = SourceMatcher(run_read)
+
+        assert matcher.constraints("민법에서 권리능력은?") == [
+            "documents/raw/statutes/민법(법률)(제21454호)(20260317).hwpx"
+        ]
+        matcher.invalidate()
+        assert matcher.constraints("형법에서 죄형법정주의는?") == [
+            "documents/raw/statutes/형법(법률)(제21450호)(20260312).hwpx"
+        ]

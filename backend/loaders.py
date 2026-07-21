@@ -14,7 +14,7 @@ PDF_PARAGRAPH_START_PATTERN = re.compile(
     r"^(제\d+장|제\d+절|제\d+조(?:의\d+)?|【[^】]+】|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\d+\.|[가-하]\.)"
 )
 PDF_NOISE_LINE_PATTERN = re.compile(
-    r"^(법제처\s*\d*\s*국가법령정보센터|법제처\s*-?\s*/\s*-\s*국가법령정보센터|-?\s*\d+\s*/\s*\d+\s*-?)$"
+    r"^(?:법제처.*국가법령정보센터|국가법령정보센터.*법제처|-?\s*\d+\s*/\s*\d+\s*-?)$"
 )
 PDF_ARTIFACT_LINE_PATTERN = re.compile(r"^[\d. ]+>$")
 PDF_LEADER_LINE_PATTERN = re.compile(r"(?:[.·]\s*){8,}")
@@ -155,13 +155,13 @@ def extract_pdf_with_pdfium(path: Path) -> str:
     pages = []
 
     pdf = pdfium.PdfDocument(path)
-    for page in pdf:
+    for page_number, page in enumerate(pdf, start=1):
         text_page = page.get_textpage()
         text = text_page.get_text_range().strip()
         if text:
-            pages.append(text)
+            pages.append(f"[[PAGE:{page_number}]]\n\n{normalize_pdf_text(text)}")
 
-    return normalize_pdf_text("\n\n".join(pages))
+    return "\n\n".join(pages)
 
 
 def extract_pdfplumber_parts(path: Path) -> tuple[str, int]:
@@ -169,7 +169,7 @@ def extract_pdfplumber_parts(path: Path) -> tuple[str, int]:
     table_count = 0
 
     with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
+        for page_number, page in enumerate(pdf.pages, start=1):
             text = page.extract_text(layout=True) or page.extract_text() or ""
             tables = page.extract_tables()
             table_count += len(tables)
@@ -181,9 +181,11 @@ def extract_pdfplumber_parts(path: Path) -> tuple[str, int]:
                         table_text.append(" | ".join(cells))
             combined = "\n".join(part for part in [text.strip(), "\n".join(table_text)] if part)
             if combined:
-                pages.append(combined)
+                pages.append(
+                    f"[[PAGE:{page_number}]]\n\n{normalize_pdf_text(combined)}"
+                )
 
-    return normalize_pdf_text("\n\n".join(pages)), table_count
+    return "\n\n".join(pages), table_count
 
 
 def _prefer_pdfplumber(

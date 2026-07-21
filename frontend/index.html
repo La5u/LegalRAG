@@ -6,7 +6,8 @@
   <title>Legal RAG</title>
   <style>
     body { max-width: 780px; margin: 32px auto; padding: 0 18px; font: 16px Arial; color: #181818; background: #fbfbfa; }
-    h1 { font-size: 1.45rem; margin: 0 0 18px; }
+    h1 { font-size: 1.45rem; margin: 0; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
     form { display: flex; flex-direction: column; gap: 8px; }
     input { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #b8b8b8; border-radius: 6px; font: inherit; background: #fff; }
     select { padding: 7px 9px; border: 1px solid #b8b8b8; border-radius: 5px; background: #fff; color: #222; }
@@ -21,14 +22,6 @@
     #trace p { margin: 0 0 8px; }
     #graph-facts-panel { display: none; margin: 18px 0; }
     #graph-facts { background: #f6f6f6; padding: 12px; }
-    .graph-view { width: 100%; min-height: 220px; display: block; }
-    .graph-node { fill: #68bdf6; stroke: #4a8db7; stroke-width: 2; }
-    .graph-node-target { fill: #ff756e; stroke: #c95a55; }
-    .graph-node-focus { fill: #f2baf6; stroke: #b980bd; }
-    .graph-edge { stroke: #a5abb6; stroke-width: 2; marker-end: url(#graph-arrow); }
-    .graph-label { fill: #fff; font-size: 11px; font-weight: 700; }
-    .graph-relation-box { fill: #f5f5f5; stroke: #b8bec9; stroke-width: 1; }
-    .graph-relation { fill: #4b5563; font-size: 10px; font-weight: 700; }
     .graph-sentence-list { margin: 10px 0 0; padding-left: 18px; color: #444; font-size: 0.92rem; line-height: 1.45; }
     details { border-top: 1px solid #d2d2d2; padding: 10px 0; }
     summary { cursor: pointer; list-style: none; color: #777; }
@@ -43,6 +36,7 @@
     .source-actions a { color: #333; font-size: 0.9rem; }
     .source-heading { color: #555; font-size: 0.88rem; margin: 8px 0 0; }
     .file-badge { margin-left: 6px; color: #666; font-size: 0.78rem; font-weight: 600; }
+    .category-badge { margin-right: 7px; padding: 2px 6px; border-radius: 10px; background: #e8edf3; color: #34445a; font-size: 0.72rem; font-weight: 700; }
     .direct-source-list { margin-left: 18px; }
     .graph-fact-document { border-top: 0; padding: 8px 0; }
     .graph-fact-row { border-top: 0; margin-left: 18px; padding: 6px 0; }
@@ -54,14 +48,20 @@
   </style>
 </head>
 <body>
-  <h1>Legal RAG</h1>
+  <header class="page-header">
+    <h1>Legal RAG</h1>
+    <select id="language" aria-label="Language">
+      <option value="en">English</option>
+      <option value="ko">한국어</option>
+    </select>
+  </header>
   <form id="chat">
     <input id="question" placeholder="Ask about your documents" required>
     <div class="control-row">
       <select id="strategy" aria-label="Retrieval strategy">
         <option value="neuro_symbolic">Neuro-Symbolic</option>
         <option value="graph">GraphRAG</option>
-        <option value="vector">Vector</option>
+        <option value="vector">Vector baseline</option>
       </select>
       <select id="category" aria-label="Document category">
         <option value="auto">Auto</option>
@@ -91,6 +91,7 @@
 
   <script>
     const form = document.querySelector("#chat");
+    const language = document.querySelector("#language");
     const question = document.querySelector("#question");
     const strategy = document.querySelector("#strategy");
     const category = document.querySelector("#category");
@@ -107,10 +108,76 @@
     let activeRequestId = 0;
     let activeDotAnimation = null;
 
+    const translations = {
+      en: {
+        language: "Language", question: "Ask about your documents", strategy: "Retrieval strategy",
+        category: "Document category", ask: "Ask", askAgain: "Ask again",
+        stop: "Stop", generating: "Generating", stopped: "Stopped.",
+        startingNew: "Starting new request", waiting: "Starting model, thinking",
+        trace: "Reasoning Trace", facts: "Graph Evidence", route: "Route",
+        categoryLabel: "Category", why: "Why", answerShape: "Answer shape",
+        noReason: "No route explanation was returned.", evidence: "Evidence",
+        ruleFound: "applicable rule found", ruleMissing: "rule not retrieved",
+        factStated: "fact stated", needsReview: "fact needed",
+        chunk: "Chunk", page: "Page", score: "Score", open: "Open in browser", download: "Download",
+        requestFailed: "Request failed", malformed: "Received malformed response from server",
+        generationFailed: "Generation failed. Review the trace and cited sources.",
+        noAnswer: "No generated answer was returned. Review the trace and cited sources.",
+        serverFailed: "The request failed. Check the server logs."
+      },
+      ko: {
+        language: "언어", question: "문서에 관해 질문하세요", strategy: "검색 방식",
+        category: "문서 유형", ask: "질문하기", askAgain: "다시 질문하기",
+        stop: "중지", generating: "답변 생성 중", stopped: "중지되었습니다.",
+        startingNew: "새 질문을 시작합니다", waiting: "모델이 답변을 준비하고 있습니다",
+        trace: "추론 과정", facts: "그래프 근거 후보", route: "질문 유형",
+        categoryLabel: "문서 유형", why: "선택 이유", answerShape: "답변 형식",
+        noReason: "질문 유형을 선택한 이유가 제공되지 않았습니다.", evidence: "근거",
+        ruleFound: "적용 규정 발견", ruleMissing: "규정 근거 미검색",
+        factStated: "사실 진술됨", needsReview: "사실 확인 필요",
+        chunk: "문단", page: "쪽", score: "점수", open: "열기", download: "다운로드",
+        requestFailed: "요청에 실패했습니다", malformed: "서버 응답 형식이 올바르지 않습니다",
+        generationFailed: "답변 생성에 실패했습니다. 추론 과정과 인용 출처를 확인하세요.",
+        noAnswer: "생성된 답변이 없습니다. 추론 과정과 인용 출처를 확인하세요.",
+        serverFailed: "요청에 실패했습니다. 서버 로그를 확인하세요."
+      }
+    };
+
+    function t(key) {
+      return translations[language.value][key];
+    }
+
+    function applyLanguage() {
+      document.documentElement.lang = language.value;
+      language.setAttribute("aria-label", t("language"));
+      question.placeholder = t("question");
+      strategy.setAttribute("aria-label", t("strategy"));
+      category.setAttribute("aria-label", t("category"));
+      askButton.textContent = activeController ? t("askAgain") : t("ask");
+      stopButton.textContent = t("stop");
+      tracePanel.querySelector("summary").textContent = t("trace");
+      graphFactsPanel.querySelector("summary").textContent = t("facts");
+      const optionLabels = language.value === "ko" ? {
+        neuro_symbolic: "신경-기호 검색", graph: "그래프 RAG", vector: "벡터 기준선",
+        auto: "자동 선택", statute: "법률", regulation: "규정·고시",
+        precedent: "판례", constitutional_decision: "헌법재판소 결정",
+        contract: "계약서", guidance: "안내서", qna: "질의응답"
+      } : {
+        neuro_symbolic: "Neuro-Symbolic", graph: "GraphRAG", vector: "Vector baseline",
+        auto: "Auto", statute: "Statutes", regulation: "Regulations",
+        precedent: "Precedents", constitutional_decision: "Constitutional",
+        contract: "Contracts", guidance: "Guidance", qna: "Q&A"
+      };
+      for (const option of [...strategy.options, ...category.options]) {
+        option.textContent = optionLabels[option.value];
+      }
+      localStorage.setItem("legalrag-language", language.value);
+    }
+
     function setBusy(isBusy) {
-      askButton.textContent = isBusy ? "Ask again" : "Ask";
+      askButton.textContent = isBusy ? t("askAgain") : t("ask");
       stopButton.hidden = !isBusy;
-      status.textContent = isBusy ? "Generating" : "";
+      status.textContent = isBusy ? t("generating") : "";
     }
 
     function stopActiveRequest(message = "Stopped.") {
@@ -190,11 +257,24 @@
       const categoryLine = document.createElement("p");
       const routeReason = document.createElement("p");
       const answerShape = document.createElement("p");
-      route.textContent = `Route: ${traceLabel(traceData.query_type)}`;
-      categoryLine.textContent = `Category: ${traceLabel(traceData.category)}`;
-      routeReason.textContent = `Why: ${traceData.route_reason || "No route explanation was returned."}`;
-      answerShape.textContent = `Answer shape: ${traceLabel(traceData.conclusion?.answer_type)}`;
+      route.textContent = `${t("route")}: ${traceLabel(traceData.query_type)}`;
+      categoryLine.textContent = `${t("categoryLabel")}: ${traceLabel(traceData.category)}`;
+      routeReason.textContent = `${t("why")}: ${translatedRouteReason(traceData)}`;
+      answerShape.textContent = `${t("answerShape")}: ${traceLabel(traceData.conclusion?.answer_type)}`;
       trace.append(route, categoryLine, routeReason, answerShape);
+
+      if (traceData.workflow === "privacy_compliance") {
+        const checklist = document.createElement("ul");
+        for (const check of traceData.privacy_checklist || []) {
+          const item = document.createElement("li");
+          const ruleStatus = check.rule_status === "found" ? t("ruleFound") : t("ruleMissing");
+          const factStatus = check.fact_status === "stated" ? t("factStated") : t("needsReview");
+          item.append(`${check.issue}: ${ruleStatus}; ${factStatus} `);
+          if (check.citation) appendCitationLink(item, check.citation, false);
+          checklist.append(item);
+        }
+        trace.append(checklist);
+      }
 
       const citations = (traceData.important_evidence || [])
         .map((item) => item.citation)
@@ -202,7 +282,7 @@
         .filter((citation, index, all) => all.indexOf(citation) === index);
       if (citations.length) {
         const evidence = document.createElement("p");
-        evidence.append("Evidence: ");
+        evidence.append(`${t("evidence")}: `);
         for (const citation of citations) {
           appendCitationLink(evidence, citation, false);
           evidence.append(" ");
@@ -213,7 +293,7 @@
     }
 
     function traceLabel(value) {
-      const labels = {
+      const english = {
         article_lookup: "article lookup",
         condition: "condition check",
         definition: "definition",
@@ -236,123 +316,37 @@
         guidance: "guidance",
         qna: "Q&A"
       };
-      return labels[value] || value || "unknown";
+      const korean = {
+        article_lookup: "조문 조회", condition: "요건 확인", definition: "정의",
+        exception: "예외 확인", general: "일반", obligation: "의무 확인",
+        prohibition: "금지 확인", yes: "예/아니요", no: "예/아니요",
+        conditional: "조건부", article_text: "조문", not_answered: "찾지 못함",
+        auto: "자동", all: "전체 문서", statute: "법률", regulation: "규정·고시",
+        precedent: "판례", constitutional_decision: "헌법재판소 결정",
+        contract: "계약서", guidance: "안내서", qna: "질의응답"
+      };
+      const labels = language.value === "ko" ? korean : english;
+      return labels[value] || value || (language.value === "ko" ? "알 수 없음" : "unknown");
+    }
+
+    function translatedRouteReason(traceData) {
+      if (language.value !== "ko") return traceData.route_reason || t("noReason");
+      const reasons = {
+        article_lookup: "특정 조문이나 조문 번호를 묻는 질문입니다.",
+        condition: "허용 여부 또는 적용 요건을 묻는 질문입니다.",
+        definition: "법률 용어의 의미를 묻는 질문입니다.",
+        exception: "예외 또는 제외 사항을 묻는 질문입니다.",
+        general: "특정 질문 유형에 해당하지 않아 일반 검색을 사용했습니다.",
+        obligation: "의무 또는 필수 행위를 묻는 질문입니다.",
+        prohibition: "금지되거나 허용되지 않는 행위를 묻는 질문입니다."
+      };
+      return reasons[traceData.query_type] || t("noReason");
     }
 
     function renderGraphFacts(facts) {
       graphFacts.replaceChildren();
-      const parsedFacts = facts.map(parseGraphFact).filter(Boolean).slice(0, 6);
-      if (parsedFacts.length) graphFacts.append(buildGraphView(parsedFacts));
       graphFacts.append(buildGraphSentenceList(facts.slice(0, 6)));
       graphFactsPanel.style.display = facts.length ? "block" : "none";
-    }
-
-    function parseGraphFact(fact) {
-      const path = fact.path || "";
-      const match = path.match(/^(?:\[[^\]]+\]\s*)?(.+?)\s+-([^->]+)->\s+(.+)$/);
-      if (!match) return null;
-      return {
-        source: match[1].trim(),
-        relation: (fact.relation || match[2]).trim(),
-        target: match[3].trim(),
-        sentence: fact.sentence || "",
-        document: fact.document || ""
-      };
-    }
-
-    function buildGraphView(facts) {
-      const namespace = "http://www.w3.org/2000/svg";
-      const svg = document.createElementNS(namespace, "svg");
-      const width = 720;
-      const rowGap = 70;
-      const height = Math.max(220, 58 + facts.length * rowGap);
-      const leftX = 150;
-      const rightX = 570;
-      svg.setAttribute("class", "graph-view");
-      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-      svg.setAttribute("role", "img");
-      svg.setAttribute("aria-label", "Graph facts");
-      appendGraphMarker(svg);
-
-      facts.forEach((fact, index) => {
-        const y = 42 + index * rowGap;
-        appendGraphEdge(svg, leftX + 37, y, rightX - 37, y);
-        appendGraphRelation(svg, (leftX + rightX) / 2, y - 7, relationLabel(fact.relation));
-        appendGraphNode(svg, leftX, y, fact.source, index === 0);
-        appendGraphNode(svg, rightX, y, fact.target, false, true);
-      });
-      return svg;
-    }
-
-    function appendGraphMarker(svg) {
-      const defs = document.createElementNS(svg.namespaceURI, "defs");
-      const marker = document.createElementNS(svg.namespaceURI, "marker");
-      const path = document.createElementNS(svg.namespaceURI, "path");
-      marker.setAttribute("id", "graph-arrow");
-      marker.setAttribute("viewBox", "0 0 10 10");
-      marker.setAttribute("refX", "9");
-      marker.setAttribute("refY", "5");
-      marker.setAttribute("markerWidth", "7");
-      marker.setAttribute("markerHeight", "7");
-      marker.setAttribute("orient", "auto-start-reverse");
-      path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-      path.setAttribute("fill", "#a5abb6");
-      marker.append(path);
-      defs.append(marker);
-      svg.append(defs);
-    }
-
-    function appendGraphEdge(svg, x1, y1, x2, y2) {
-      const line = document.createElementNS(svg.namespaceURI, "line");
-      line.setAttribute("class", "graph-edge");
-      line.setAttribute("x1", x1);
-      line.setAttribute("y1", y1);
-      line.setAttribute("x2", x2);
-      line.setAttribute("y2", y2);
-      svg.append(line);
-    }
-
-    function appendGraphNode(svg, x, y, label, isFocus, isTarget = false) {
-      const circle = document.createElementNS(svg.namespaceURI, "circle");
-      const className = isFocus
-        ? "graph-node graph-node-focus"
-        : isTarget
-          ? "graph-node graph-node-target"
-          : "graph-node";
-      circle.setAttribute("class", className);
-      circle.setAttribute("cx", x);
-      circle.setAttribute("cy", y);
-      circle.setAttribute("r", 31);
-      svg.append(circle);
-      appendGraphText(svg, x, y + 4, compactLabel(label), "graph-label", "middle");
-    }
-
-    function appendGraphRelation(svg, x, y, label) {
-      const box = document.createElementNS(svg.namespaceURI, "rect");
-      const text = document.createElementNS(svg.namespaceURI, "text");
-      const width = Math.max(62, label.length * 6);
-      box.setAttribute("class", "graph-relation-box");
-      box.setAttribute("x", x - width / 2);
-      box.setAttribute("y", y - 16);
-      box.setAttribute("width", width);
-      box.setAttribute("height", 18);
-      box.setAttribute("rx", 9);
-      text.setAttribute("class", "graph-relation");
-      text.setAttribute("x", x);
-      text.setAttribute("y", y - 3);
-      text.setAttribute("text-anchor", "middle");
-      text.textContent = label;
-      svg.append(box, text);
-    }
-
-    function appendGraphText(svg, x, y, label, className, anchor) {
-      const text = document.createElementNS(svg.namespaceURI, "text");
-      text.setAttribute("class", className);
-      text.setAttribute("x", x);
-      text.setAttribute("y", y);
-      text.setAttribute("text-anchor", anchor);
-      text.textContent = label;
-      svg.append(text);
     }
 
     function buildGraphSentenceList(facts) {
@@ -364,14 +358,6 @@
         list.append(item);
       }
       return list;
-    }
-
-    function relationLabel(relation) {
-      return relation.replaceAll("_", " ").toLowerCase();
-    }
-
-    function compactLabel(label) {
-      return label.length > 10 ? `${label.slice(0, 9)}...` : label;
     }
 
     function renderSources(sourceList) {
@@ -391,9 +377,12 @@
         const directSources = [];
         details.className = "document-source";
         details.open = true;
+        const categoryBadge = document.createElement("span");
+        categoryBadge.className = "category-badge";
+        categoryBadge.textContent = traceLabel(documentSources[0].document_type);
         filename.textContent = displayDocumentName(documentName);
         filename.title = documentName;
-        summary.append(filename);
+        summary.append(categoryBadge, filename);
         if (hasPdf) {
           const badge = document.createElement("span");
           badge.className = "file-badge";
@@ -443,21 +432,27 @@
         const actions = document.createElement("div");
         const score = source.score === null
           ? ""
-          : ` | Score: ${source.score.toFixed(3)}`;
+          : ` | ${t("score")}: ${source.score.toFixed(3)}`;
+        const page = source.page_number ? ` | ${t("page")}: ${source.page_number}` : "";
         chunk.className = "chunk-source";
         chunk.id = `source-${source.citation}`;
-        chunkSummary.textContent = `${source.citation}. Chunk ${source.chunk}${score}`;
+        chunkSummary.textContent = `${source.citation}. ${t("chunk")} ${source.chunk}${page}${score}`;
         heading.className = "source-heading";
         heading.textContent = source.heading_path || "";
         text.textContent = sourceDisplayText(source);
         actions.className = "source-actions";
         if (source.pdf_url) {
-          const pdfLink = document.createElement("a");
-          pdfLink.href = source.pdf_url;
-          pdfLink.target = "_blank";
-          pdfLink.rel = "noopener";
-          pdfLink.textContent = "Open";
-          actions.append(pdfLink);
+          const openLink = document.createElement("a");
+          const downloadLink = document.createElement("a");
+          openLink.href = source.page_number
+            ? `${source.pdf_url}#page=${source.page_number}`
+            : source.pdf_url;
+          openLink.target = "_blank";
+          openLink.rel = "noopener";
+          openLink.textContent = t("open");
+          downloadLink.href = `${source.pdf_url}?download=1`;
+          downloadLink.textContent = t("download");
+          actions.append(openLink, downloadLink);
         }
         chunk.append(chunkSummary);
         if (source.heading_path) chunk.append(heading);
@@ -486,20 +481,25 @@
     }
 
     stopButton.addEventListener("click", () => {
-      stopActiveRequest("Stopped.");
-      answer.textContent = "Stopped.";
+      stopActiveRequest(t("stopped"));
+      answer.textContent = t("stopped");
     });
+
+    language.value = localStorage.getItem("legalrag-language") ||
+      (navigator.language.startsWith("ko") ? "ko" : "en");
+    language.addEventListener("change", applyLanguage);
+    applyLanguage();
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (activeController) stopActiveRequest("Starting new request");
+      if (activeController) stopActiveRequest(t("startingNew"));
       if (activeDotAnimation) clearInterval(activeDotAnimation);
       const requestId = activeRequestId + 1;
       activeRequestId = requestId;
       const controller = new AbortController();
       activeController = controller;
       let dotCount = 1;
-      const waitingText = "Starting model, thinking";
+      const waitingText = t("waiting");
       answer.textContent = `${waitingText}.`;
       setBusy(true);
       tracePanel.style.display = "none";
@@ -515,14 +515,21 @@
       sources.replaceChildren();
 
       try {
-        const response = await fetch("/ask", {
+        const response = await fetch("ask", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({question: question.value, strategy: strategy.value, category: category.value}),
           signal: controller.signal
         });
         if (requestId !== activeRequestId) return;
-        if (!response.ok) throw new Error("Request failed");
+        if (!response.ok) {
+          const errorBody = await response.json().catch(() => ({}));
+          throw new Error(
+            language.value === "ko"
+              ? t("requestFailed")
+              : errorBody.detail || t("requestFailed")
+          );
+        }
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -542,7 +549,7 @@
             try {
               message = JSON.parse(line);
             } catch {
-              throw new Error("Received malformed response from server");
+              throw new Error(t("malformed"));
             }
             if (message.type === "sources") {
               renderSources(message.sources);
@@ -553,11 +560,13 @@
             } else if (message.type === "token") {
               clearInterval(dotAnimation);
               answerText += message.text;
-              status.textContent = "Generating";
+              status.textContent = t("generating");
               answer.textContent = answerText;
             } else if (message.type === "error") {
               clearInterval(dotAnimation);
-              answer.textContent = message.message || "Generation failed. Review the trace and cited sources.";
+              answer.textContent = language.value === "ko"
+                ? t("generationFailed")
+                : message.message || t("generationFailed");
               return;
             }
           }
@@ -567,13 +576,13 @@
 
         if (requestId !== activeRequestId) return;
         if (!answerText.trim()) {
-          answer.textContent = "No generated answer was returned. Review the trace and cited sources.";
+          answer.textContent = t("noAnswer");
           return;
         }
         renderAnswer(answerText);
       } catch (error) {
         if (error.name === "AbortError" || requestId !== activeRequestId) return;
-        answer.textContent = "The request failed. Check Neo4j, Ollama, and the server logs.";
+        answer.textContent = error.message || t("serverFailed");
       } finally {
         if (requestId === activeRequestId) {
           clearInterval(dotAnimation);

@@ -53,10 +53,15 @@ class EvaluationResult:
     answer: str
     retrieved_citations: list[str]
     source_precision: float
-    score: float
+    score: float | None
     latency: float
     details: str = ""
     symbolic_score: float = 0.0
+    retrieved_sources: list[dict] = field(default_factory=list)
+    document_hit: float = 0.0
+    citation_recall: float = 0.0
+    reciprocal_rank: float = 0.0
+    irrelevant_ratio: float = 0.0
 
     def to_jsonl(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -88,5 +93,7 @@ def load_results(path: str | Path) -> list[EvaluationResult]:
 
 
 def append_result(result: EvaluationResult, path: str | Path) -> None:
-    with open(path, "a", encoding="utf-8") as f:
+    results_path = Path(path)
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(results_path, "a", encoding="utf-8") as f:
         f.write(result.to_jsonl() + "\n")

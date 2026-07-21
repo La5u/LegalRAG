@@ -7,8 +7,23 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
 from backend.document import Document
+from backend.graph_retrieve import GraphFact
+
+
+def make_graph_fact(**overrides):
+    defaults = {
+        "id": "gf-1",
+        "document": "법.pdf",
+        "source_path": "documents/raw/statutes/법.pdf",
+        "chunk": "graph-1",
+        "relation": "MUST_NOTIFY",
+        "path": "개인정보처리자 -MUST_NOTIFY-> 정보주체",
+        "sentence": "통지하여야 한다",
+        "score": 0.5,
+    }
+    return GraphFact(**(defaults | overrides))
+
 
 DEFAULT_META = {
     "chunk_number": 1,

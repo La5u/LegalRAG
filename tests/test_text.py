@@ -1,5 +1,3 @@
-import re
-
 import pytest
 
 from backend.text import extract_tokens, split_sentences, strip_korean_particle

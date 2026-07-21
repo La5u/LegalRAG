@@ -9,11 +9,21 @@ services:
       LEGALRAG_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-legalrag-password}
       LEGALRAG_OLLAMA_URL: ${LEGALRAG_OLLAMA_URL:-http://host.docker.internal:11434}
       LEGALRAG_VLLM_URL: ${LEGALRAG_VLLM_URL:-http://host.docker.internal:8001}
+      LEGALRAG_LLM_PROVIDER: ${LEGALRAG_LLM_PROVIDER:-ollama}
+      LEGALRAG_LLM_BASE_URL: ${LEGALRAG_LLM_BASE_URL:-}
+      LEGALRAG_LLM_API_KEY: ${LEGALRAG_LLM_API_KEY:-}
+      LEGALRAG_GENERATION_MODEL: ${LEGALRAG_GENERATION_MODEL:-qwen3.5:4b}
+      LEGALRAG_EMBEDDING_MODEL: ${LEGALRAG_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       neo4j:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     volumes:
       - ./documents:/app/documents:ro
       - ./.cache/huggingface:/app/.cache/huggingface:ro

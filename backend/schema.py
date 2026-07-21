@@ -1,9 +1,64 @@
+OBSOLETE_INDEXES = (
+    "article_id", "chapter_id", "section_id", "citation_id",
+    "cites_article_number", "cites_chunk_id", "cites_legal_unit_id",
+    "cites_source_path",
+    "exception_to_article_number", "exception_to_chunk_id",
+    "exception_to_legal_unit_id",
+    "has_duty_article_number", "has_duty_chunk_id", "has_duty_legal_unit_id",
+    "may_article_number", "may_chunk_id", "may_legal_unit_id",
+    "may_request_article_number", "may_request_chunk_id",
+    "may_request_legal_unit_id",
+    "must_notify_article_number", "must_notify_chunk_id",
+    "must_notify_legal_unit_id",
+    "prohibits_article_number", "prohibits_chunk_id",
+    "prohibits_legal_unit_id",
+)
+
+RELATION_TYPES = (
+    "EXCEPTION_TO", "HAS_DUTY", "MAY", "MAY_REQUEST", "MUST_NOTIFY",
+    "PROHIBITS",
+)
+OBSOLETE_CONSTRAINTS = ("article_id", "chapter_id", "section_id", "citation_id")
+
+
 def setup_schema(run_write) -> None:
+    for constraint_name in OBSOLETE_CONSTRAINTS:
+        run_write(f"DROP CONSTRAINT {constraint_name} IF EXISTS")
+    for index_name in OBSOLETE_INDEXES:
+        run_write(f"DROP INDEX {index_name} IF EXISTS")
+    run_write(
+        "MATCH (citation:Citation) DETACH DELETE citation"
+    )
+    run_write(
+        "MATCH (legacy) WHERE legacy:Article OR legacy:Chapter OR legacy:Section "
+        "DETACH DELETE legacy"
+    )
     run_write(
         """
         CREATE CONSTRAINT document_source_path IF NOT EXISTS
         FOR (document:Document)
         REQUIRE document.source_path IS UNIQUE
+        """
+    )
+    run_write(
+        """
+        CREATE INDEX document_logical_id IF NOT EXISTS
+        FOR (document:Document)
+        ON (document.logical_id)
+        """
+    )
+    run_write(
+        """
+        CREATE INDEX document_type IF NOT EXISTS
+        FOR (document:Document)
+        ON (document.document_type)
+        """
+    )
+    run_write(
+        """
+        CREATE INDEX chunk_source_path IF NOT EXISTS
+        FOR (chunk:Chunk)
+        ON (chunk.source_path)
         """
     )
     run_write(
@@ -22,9 +77,23 @@ def setup_schema(run_write) -> None:
     )
     run_write(
         """
+        CREATE INDEX legal_unit_source_path IF NOT EXISTS
+        FOR (legal_unit:LegalUnit)
+        ON (legal_unit.source_path)
+        """
+    )
+    run_write(
+        """
         CREATE CONSTRAINT definition_id IF NOT EXISTS
         FOR (definition:Definition)
         REQUIRE definition.id IS UNIQUE
+        """
+    )
+    run_write(
+        """
+        CREATE INDEX definition_source_path IF NOT EXISTS
+        FOR (definition:Definition)
+        ON (definition.source_path)
         """
     )
     run_write(
@@ -57,12 +126,20 @@ def setup_schema(run_write) -> None:
     )
     run_write(
         """
-        CREATE CONSTRAINT citation_id IF NOT EXISTS
-        FOR (citation:Citation)
-        REQUIRE citation.id IS UNIQUE
+        CREATE INDEX holding_source_path IF NOT EXISTS
+        FOR (holding:Holding)
+        ON (holding.source_path)
         """
     )
-
+    for relation_type in RELATION_TYPES:
+        index_name = relation_type.casefold() + "_source_path"
+        run_write(
+            f"""
+            CREATE INDEX {index_name} IF NOT EXISTS
+            FOR ()-[relation:{relation_type}]-()
+            ON (relation.source_path)
+            """
+        )
 def setup_vector_index(
     run_write,
     run_read,

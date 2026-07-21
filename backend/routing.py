@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 import re
 
-from backend.constants import ARTICLE_PATTERN, QUERY_STOP_TERMS, TOKEN_PATTERN
-from backend.text import get_kiwi
+from backend.constants import ARTICLE_PATTERN, QUERY_STOP_TERMS
+from backend.text import get_kiwi, query_terms
 
 QUOTED_PATTERN = re.compile(r"[\"'“”‘’](.*?)[\"'“”‘’]")
 
@@ -54,43 +54,66 @@ def has_standalone_phrase(text: str, phrase: str) -> bool:
 @dataclass(frozen=True)
 class QueryRoute:
     kind: str
+    # A question can request several operations at once. ``kind`` remains the
+    # primary operation for compatibility with stored traces and the UI.
+    tasks: list[str] = field(default_factory=list)
     document_category: str | None = None
     article_numbers: list[str] = field(default_factory=list)
     search_terms: list[str] = field(default_factory=list)
-    include_graph_facts: bool = True
+
+
+_CATEGORY_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("precedent", ("판례", "판결", "사건번호", "선고")),
+    ("constitutional_decision", ("헌법재판소", "헌재", "헌법소원")),
+    ("contract", ("계약서", "임대차", "임대인", "임차인", "보증금")),
+    ("guidance", ("안내서", "가이드라인", "매뉴얼")),
+    ("regulation", ("시행령", "대통령령", "시행규칙")),
+]
 
 
 def classify_document_category(query: str) -> str | None:
     lowered = query.casefold()
-    if any(term in lowered for term in ("판례", "판결", "사건번호", "선고")):
-        return "precedent"
-    if any(term in lowered for term in ("헌법재판소", "헌재", "헌법소원")):
-        return "constitutional_decision"
-    if any(term in lowered for term in ("계약서", "임대차", "임대인", "임차인", "보증금")):
-        return "contract"
-    if any(term in lowered for term in ("안내서", "가이드라인", "매뉴얼")):
-        return "guidance"
-    if any(term in lowered for term in ("시행령", "대통령령", "시행규칙")):
-        return "regulation"
+    for category, terms in _CATEGORY_RULES:
+        if any(term in lowered for term in terms):
+            return category
     return None
 
 
 def classify_query(query: str, category: str | None = None) -> QueryRoute:
     lowered = query.casefold()
-    article_numbers = ARTICLE_PATTERN.findall(query)
+    article_numbers = [
+        match.group(0)
+        for match in ARTICLE_PATTERN.finditer(query)
+        if not (
+            re.search(r"(?:^|\s)법\s*$", query[:match.start()])
+            and re.match(r"\s*에\s*따(?:라|른)", query[match.end():])
+        )
+    ]
     quoted_terms = [
         term.strip()
         for term in QUOTED_PATTERN.findall(query)
         if term.strip()
     ]
-    token_terms = [
-        term
-        for term in TOKEN_PATTERN.findall(query)
-        if term.casefold() not in QUERY_STOP_TERMS
-    ]
-    search_terms = list(dict.fromkeys(quoted_terms + token_terms))[:10]
+    search_terms = query_terms(
+        query,
+        initial_terms=quoted_terms,
+        ignored_terms=QUERY_STOP_TERMS,
+        max_terms=10,
+    )
     doc_category = category or classify_document_category(query)
+    tasks = _classify_tasks(query, lowered, article_numbers)
+    kind = _pick_primary_kind(tasks)
+    return QueryRoute(
+        kind=kind,
+        tasks=tasks,
+        article_numbers=article_numbers,
+        search_terms=search_terms,
+        document_category=doc_category,
+    )
 
+
+def _classify_tasks(query: str, lowered: str, article_numbers: list[str]) -> list[str]:
+    tasks = []
     if (
         "정의" in query
         or "란 무엇" in query
@@ -98,48 +121,17 @@ def classify_query(query: str, category: str | None = None) -> QueryRoute:
         or has_standalone_phrase(query, "이란")
         or re.search(r"[가-힣]란\s*$", query)
     ):
-        return QueryRoute(
-            kind="definition",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-        )
+        tasks.append("definition")
     if article_numbers or "몇 조" in query or "어느 조" in query or "조에 규정" in query:
-        return QueryRoute(
-            kind="article_lookup",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-            include_graph_facts=False,
-        )
+        tasks.append("article_lookup")
     if "인용" in query or "사건번호" in query or "판례_" in query or "lbox_" in lowered:
-        return QueryRoute(
-            kind="citation",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-        )
+        tasks.append("citation")
     if "예외" in query or "제외" in query or "다만" in query:
-        return QueryRoute(
-            kind="exception",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-        )
+        tasks.append("exception")
     if "금지" in query or "해서는 아니" in query:
-        return QueryRoute(
-            kind="prohibition",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-        )
+        tasks.append("prohibition")
     if "조건" in query or "경우" in query or "요건" in query or "시점" in query:
-        return QueryRoute(
-            kind="condition",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-        )
+        tasks.append("condition")
     if (
         "동의 없이" in query
         or "할 수 있" in query
@@ -148,24 +140,19 @@ def classify_query(query: str, category: str | None = None) -> QueryRoute:
         or "가능" in query
         or "허용" in query
     ):
-        return QueryRoute(
-            kind="condition",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-        )
+        if "condition" not in tasks:
+            tasks.append("condition")
     if "의무" in query or "하여야" in query or "해야" in query:
-        return QueryRoute(
-            kind="obligation",
-            article_numbers=article_numbers,
-            search_terms=search_terms,
-            document_category=doc_category,
-        )
-    return QueryRoute(
-        kind="general",
-        article_numbers=article_numbers,
-        search_terms=search_terms,
+        tasks.append("obligation")
+    return tasks
+
+
+def _pick_primary_kind(tasks: list[str]) -> str:
+    primary_order = (
+        "definition", "citation", "exception", "prohibition", "condition",
+        "obligation", "article_lookup",
     )
+    return next((task for task in primary_order if task in tasks), "general")
 
 
 def route_reason(query_type: str | None) -> str:

@@ -1,0 +1,62 @@
+[
+  {
+    "url": "https://www.kcabinternational.or.kr/eng/pdf/2026%20KCAB%20International%20Arbitration%20Rules%20%28KOR%29%20260319.pdf",
+    "path": "documents/raw/regulations/대한상사중재원 국제중재규칙(2026).pdf"
+  },
+  {
+    "url": "https://www.kcabinternational.or.kr/eng/pdf/%EA%B5%AD%EB%82%B4%EC%A4%91%EC%9E%AC%EA%B7%9C%EC%B9%99%28%EA%B5%AD%EB%AC%B8%29_2025.pdf",
+    "path": "documents/raw/regulations/대한상사중재원 국내중재규칙(2025).pdf"
+  },
+  {
+    "url": "https://mss.go.kr/common/board/Download.do?bcIdx=1012355&cbIdx=246&streFileNm=1151dc95-51ec-47d4-be18-08eb4d421804.pdf",
+    "path": "documents/raw/guidance/중소기업 기술보호 가이드(2025).pdf"
+  },
+  {
+    "url": "https://www.mss.go.kr/common/board/Download.do?bcIdx=1010902&cbIdx=81&streFileNm=59778950-ab55-4de0-8b89-c8ba044bc61d.hwp",
+    "path": "documents/raw/contracts/표준비밀유지협약서(2019).hwp"
+  },
+  {
+    "administrative_rule": true,
+    "sequence": "2100000281984",
+    "character_class": "010202",
+    "directory": "documents/raw/regulations",
+    "name": "외국환거래규정(재정경제부고시)(제2026-88호)(20260706)"
+  },
+  {
+    "administrative_rule": true,
+    "sequence": "2100000245574",
+    "administrative_rule_id": "34709",
+    "character_class": "010201",
+    "directory": "documents/raw/regulations",
+    "name": "기업결합 심사기준(공정거래위원회고시)(제2024-15호)(20240807)"
+  },
+  {"law_name": "민사집행법", "directory": "documents/raw/statutes"},
+  {"law_name": "민사집행법 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "채무자 회생 및 파산에 관한 법률", "directory": "documents/raw/statutes"},
+  {"law_name": "채무자 회생 및 파산에 관한 법률 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "채무자 회생 및 파산에 관한 규칙", "directory": "documents/raw/regulations"},
+  {
+    "law_name": "산업안전보건법",
+    "directory": "documents/raw/statutes",
+    "effective_date": "20260707"
+  },
+  {"law_name": "산업안전보건법 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "중대재해 처벌 등에 관한 법률", "directory": "documents/raw/statutes"},
+  {"law_name": "중대재해 처벌 등에 관한 법률 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "근로자퇴직급여 보장법", "directory": "documents/raw/statutes"},
+  {"law_name": "자본시장과 금융투자업에 관한 법률", "directory": "documents/raw/statutes"},
+  {"law_name": "자본시장과 금융투자업에 관한 법률 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "외국환거래법", "directory": "documents/raw/statutes"},
+  {"law_name": "외국환거래법 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "국제사법", "directory": "documents/raw/statutes"},
+  {"law_name": "중재법", "directory": "documents/raw/statutes"},
+  {"law_name": "부정경쟁방지 및 영업비밀보호에 관한 법률", "directory": "documents/raw/statutes"},
+  {"law_name": "부정경쟁방지 및 영업비밀보호에 관한 법률 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "산업기술의 유출방지 및 보호에 관한 법률", "directory": "documents/raw/statutes"},
+  {"law_name": "산업기술의 유출방지 및 보호에 관한 법률 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "독점규제 및 공정거래에 관한 법률 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "하도급거래 공정화에 관한 법률", "directory": "documents/raw/statutes"},
+  {"law_name": "하도급거래 공정화에 관한 법률 시행령", "directory": "documents/raw/regulations"},
+  {"law_name": "가맹사업거래의 공정화에 관한 법률", "directory": "documents/raw/statutes"},
+  {"law_name": "가맹사업거래의 공정화에 관한 법률 시행령", "directory": "documents/raw/regulations"}
+]

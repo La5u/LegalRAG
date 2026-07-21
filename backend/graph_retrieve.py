@@ -3,14 +3,13 @@ from dataclasses import dataclass
 
 from backend.constants import (
     CONCEPT_STOP_TERMS,
-    CONCEPT_STOP_TERMS_LIST,
     GRAPH_FACT_ID_PREFIX,
     QUERY_STOP_TERMS,
 )
 from backend.document import Document
 from backend.records import chunk_meta
-from backend.text import extract_tokens
-from backend.triples import CONCEPT_RELATION_TYPES, LEGAL_RELATIONS
+from backend.text import deduplicate, query_terms as normalized_query_terms
+from backend.triples import CONCEPT_RELATION_TYPES
 
 
 
@@ -29,6 +28,7 @@ class GraphFact:
     article: str | None = None
     legal_unit_id: str | None = None
     case_number: str | None = None
+    definition_term: str | None = None
 
     def to_document(self) -> Document:
         return Document(
@@ -44,25 +44,15 @@ class GraphFact:
                 article_number=self.article,
                 graph_relation=self.relation,
                 case_number=self.case_number,
+                evidence_type="graph_fact",
+                definition_term=self.definition_term,
             ),
             score=self.score,
         )
 
     @property
     def content(self) -> str:
-        return f"그래프 사실:\n{self.path}\n근거 문장: {self.sentence}"
-
-    def to_response(self) -> dict:
-        return {
-            "document": self.document,
-            "raw_document": self.document,
-            "chunk": self.chunk,
-            "article": self.article,
-            "relation": self.relation,
-            "path": self.path,
-            "sentence": self.sentence,
-            "score": self.score,
-        }
+        return f"그래프 관계 후보:\n{self.path}\n근거 문장: {self.sentence}"
 
 
 def graph_facts(
@@ -74,24 +64,21 @@ def graph_facts(
     terms: list[str] | None = None,
 ) -> list[GraphFact]:
     chunk_ids = chunk_ids or [chunk.meta["id"] for chunk in chunks if chunk.meta.get("id")]
-    source_paths = source_paths or list(
-        dict.fromkeys(
+    if source_paths is None:
+        source_paths = deduplicate(
             chunk.meta["source_path"]
             for chunk in chunks
             if chunk.meta.get("source_path")
         )
-    )
     if terms is None:
         terms = query_terms(query)
-    focus_article_numbers = list(
-        dict.fromkeys(
-            article_terms(query)
-            + [
-                chunk.meta["article_number"]
-                for chunk in chunks
-                if chunk.meta.get("article_number")
-            ]
-        )
+    focus_article_numbers = deduplicate(
+        article_terms(query)
+        + [
+            chunk.meta["article_number"]
+            for chunk in chunks
+            if chunk.meta.get("article_number")
+        ]
     )
     return (
         _case_holding_facts(run_read, query, source_paths, terms)
@@ -106,9 +93,6 @@ def graph_facts(
         + _graph_definition_facts(run_read, query, chunk_ids, source_paths, terms)
     )
 
-
-def graph_fact_documents(*args, **kwargs) -> list[Document]:
-    return [fact.to_document() for fact in graph_facts(*args, **kwargs)]
 
 
 def _case_holding_facts(
@@ -155,7 +139,7 @@ def _case_holding_facts(
             holding.chunk_number
         LIMIT 8
         """,
-        source_paths=list(dict.fromkeys(source_paths)),
+        source_paths=deduplicate(source_paths),
         case_terms=case_terms,
     )
     return [
@@ -163,7 +147,7 @@ def _case_holding_facts(
             id=f"{GRAPH_FACT_ID_PREFIX}HAS_HOLDING::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
-            chunk=f"graph-case-{index}",
+            chunk=record["chunk_number"],
             relation="HAS_HOLDING",
             path=f"{record['case_number']} -HAS_HOLDING-> Holding",
             sentence=record["text"],
@@ -179,7 +163,7 @@ def _graph_relation_facts(
     query: str,
     chunk_ids: list[str],
     source_paths: list[str],
-    _terms: list[str],
+    terms: list[str],
     focus_article_numbers: list[str],
 ) -> list[GraphFact]:
     relation_records = run_read(
@@ -214,8 +198,14 @@ def _graph_relation_facts(
                 WHEN target.name IN $article_terms THEN 0
                 WHEN article.number IN $article_terms THEN 0
                 ELSE 1
-            END AS article_priority
-        ORDER BY relation_priority, article_priority, relation.chunk_number
+            END AS article_priority,
+            CASE
+                WHEN any(term IN $terms WHERE source.name CONTAINS term
+                    OR target.name CONTAINS term
+                    OR relation.sentence CONTAINS term)
+                THEN 0 ELSE 1
+            END AS term_priority
+        ORDER BY relation_priority, article_priority, term_priority, relation.chunk_number
         RETURN
             source.name AS source,
             type(relation) AS relation,
@@ -233,10 +223,11 @@ def _graph_relation_facts(
         """,
         relations=CONCEPT_RELATION_TYPES,
         preferred_relations=preferred_relations(query),
-        concept_stop_terms=CONCEPT_STOP_TERMS_LIST,
+        concept_stop_terms=sorted(CONCEPT_STOP_TERMS),
         article_terms=article_terms(query),
+        terms=terms,
         chunk_ids=chunk_ids,
-        source_paths=list(dict.fromkeys(source_paths)),
+        source_paths=deduplicate(source_paths),
         article_numbers=focus_article_numbers,
         has_source_paths=bool(source_paths),
         allow_case_sources=wants_case_fact(query),
@@ -246,7 +237,7 @@ def _graph_relation_facts(
             id=f"{GRAPH_FACT_ID_PREFIX}{record['relation']}::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
-            chunk=f"graph-{index}",
+            chunk=record["chunk_number"],
             relation=record["relation"],
             path=(
                 (f"[{record['article_number']}] " if record.get("article_number") else "")
@@ -305,7 +296,7 @@ def _graph_definition_facts(
         LIMIT 10
         """,
         chunk_ids=chunk_ids,
-        source_paths=list(dict.fromkeys(source_paths)),
+        source_paths=deduplicate(source_paths),
         article_numbers=article_terms(query),
         query_terms=terms,
     )
@@ -314,7 +305,7 @@ def _graph_definition_facts(
             id=f"{GRAPH_FACT_ID_PREFIX}DEFINED_AS::{record['chunk_id']}::{index}",
             document=record["document_name"],
             source_path=record["source_path"],
-            chunk=f"graph-definition-{index}",
+            chunk=record["chunk_number"],
             relation="DEFINED_AS",
             path=(
                 (f"[{record['article_number']}] " if record.get("article_number") else "")
@@ -324,18 +315,18 @@ def _graph_definition_facts(
             score=0.9 - index * 0.001,
             article=record.get("article_number"),
             legal_unit_id=record.get("article_id"),
+            definition_term=record["term"],
         )
         for index, record in enumerate(definition_records, start=1)
     ]
 
 
 def query_terms(query: str) -> list[str]:
-    return [
-        term
-        for term in extract_tokens(query)
-        if term.casefold() not in QUERY_STOP_TERMS
-        and term not in CONCEPT_STOP_TERMS
-    ][:8]
+    return normalized_query_terms(
+        query,
+        ignored_terms=QUERY_STOP_TERMS | CONCEPT_STOP_TERMS,
+        max_terms=8,
+    )
 
 
 def wants_definition(query: str) -> bool:

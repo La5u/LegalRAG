@@ -1,6 +1,25 @@
 import pytest
 
+from backend.document import Document
 from backend.records import chunk_meta, chunk_return_fields
+
+
+def test_document_with_meta_preserves_original_document():
+    original = Document("내용", {"id": "chunk-1"}, 0.8)
+
+    updated = original.with_meta(article_number="제1조")
+
+    assert original.meta == {"id": "chunk-1"}
+    assert updated.meta == {"id": "chunk-1", "article_number": "제1조"}
+    assert updated.content == original.content
+    assert updated.score == original.score
+
+
+def test_document_evidence_key_prefers_id_then_source_location():
+    assert Document("내용", {"id": "chunk-1"}).evidence_key == "chunk-1"
+    assert Document(
+        "내용", {"source_path": "law.hwpx", "chunk_number": 2},
+    ).evidence_key == ("law.hwpx", 2)
 
 
 # ---------------------------------------------------------------------------

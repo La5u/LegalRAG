@@ -86,12 +86,22 @@ class TestExtractDefinitions:
         )
         defs = extract_definitions([chunk])
         assert defs[0].chunk_number == 5
+        assert defs[0].source_path == "documents/raw/statutes/test.hwpx"
+        assert defs[0].document_name == "test.hwpx"
         assert defs[0].article_number == "제3조"
         assert defs[0].article_title == "정의"
 
 
 class TestDefinitionDataclass:
     def test_frozen(self):
-        d = Definition(term="test", text="test text", chunk_number=1, article_number=None, article_title=None)
+        d = Definition(
+            term="test",
+            text="test text",
+            chunk_number=1,
+            source_path="test.hwpx",
+            document_name="test.hwpx",
+            article_number=None,
+            article_title=None,
+        )
         with pytest.raises(AttributeError):
             d.term = "changed"
