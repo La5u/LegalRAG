@@ -282,6 +282,8 @@ class LegalRAG:
         query: str,
         result: RetrievalResult,
         callback,
+        hosted_model: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         if not result.evidence:
             message = (
@@ -295,12 +297,13 @@ class LegalRAG:
         symbolic_context = grounded_symbolic_context(
             result.evidence, result.symbolic_trace,
         )
-        await stream_answer(
-            query,
-            context,
-            callback,
-            symbolic_context=symbolic_context,
-        )
+        generation_options = {"symbolic_context": symbolic_context}
+        if hosted_model:
+            generation_options.update(
+                hosted_model=hosted_model,
+                api_key=api_key,
+            )
+        await stream_answer(query, context, callback, **generation_options)
 
 
 def format_evidence_context(result: RetrievalResult) -> str:

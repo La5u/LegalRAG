@@ -15,6 +15,8 @@
     button.secondary { background: #f1f1f1; color: #222; }
     button:disabled { cursor: default; opacity: 0.55; }
     .control-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .api-key-row[hidden] { display: none; }
+    .api-key-note { color: #666; font-size: 0.82rem; }
     .status { color: #666; font-size: 0.9rem; min-height: 1.2em; }
     #answer { white-space: pre-wrap; margin: 24px 0; line-height: 1.55; }
     #trace-panel { display: none; margin: 18px 0; }
@@ -73,9 +75,19 @@
         <option value="guidance">Guidance</option>
         <option value="qna">Q&A</option>
       </select>
+      <select id="generation-model" aria-label="Answer model">
+        <option value="local">Local</option>
+        <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+        <option value="qwen/qwen3.6-27b">Qwen 3.6 27B (Groq)</option>
+      </select>
       <button id="ask-button">Ask</button>
       <button id="stop-button" class="secondary" type="button" hidden>Stop</button>
       <span id="status" class="status" aria-live="polite"></span>
+    </div>
+    <div id="api-key-row" class="api-key-row" hidden>
+      <input id="api-key" type="password" autocomplete="off" spellcheck="false"
+        placeholder="API key">
+      <span id="api-key-note" class="api-key-note">Saved only in this browser tab.</span>
     </div>
   </form>
   <div id="answer"></div>
@@ -95,6 +107,10 @@
     const question = document.querySelector("#question");
     const strategy = document.querySelector("#strategy");
     const category = document.querySelector("#category");
+    const generationModel = document.querySelector("#generation-model");
+    const apiKeyRow = document.querySelector("#api-key-row");
+    const apiKey = document.querySelector("#api-key");
+    const apiKeyNote = document.querySelector("#api-key-note");
     const askButton = document.querySelector("#ask-button");
     const stopButton = document.querySelector("#stop-button");
     const status = document.querySelector("#status");
@@ -111,7 +127,8 @@
     const translations = {
       en: {
         language: "Language", question: "Ask about your documents", strategy: "Retrieval strategy",
-        category: "Document category", ask: "Ask", askAgain: "Ask again",
+        category: "Document category", model: "Answer model", apiKey: "API key",
+        apiKeyNote: "Saved only in this browser tab.", ask: "Ask", askAgain: "Ask again",
         stop: "Stop", generating: "Generating", stopped: "Stopped.",
         startingNew: "Starting new request", waiting: "Starting model, thinking",
         trace: "Reasoning Trace", facts: "Graph Evidence", route: "Route",
@@ -122,12 +139,17 @@
         chunk: "Chunk", page: "Page", score: "Score", open: "Open in browser", download: "Download",
         requestFailed: "Request failed", malformed: "Received malformed response from server",
         generationFailed: "Generation failed. Review the trace and cited sources.",
+        invalidApiKey: "The API key was rejected. Check or replace it.",
+        rateLimit: "The provider's free quota or rate limit was reached. Try again later.",
+        providerRejected: "The provider rejected this model request.",
+        providerUnavailable: "The model provider is temporarily unavailable.",
         noAnswer: "No generated answer was returned. Review the trace and cited sources.",
         serverFailed: "The request failed. Check the server logs."
       },
       ko: {
         language: "언어", question: "문서에 관해 질문하세요", strategy: "검색 방식",
-        category: "문서 유형", ask: "질문하기", askAgain: "다시 질문하기",
+        category: "문서 유형", model: "답변 모델", apiKey: "API 키",
+        apiKeyNote: "이 브라우저 탭에만 저장됩니다.", ask: "질문하기", askAgain: "다시 질문하기",
         stop: "중지", generating: "답변 생성 중", stopped: "중지되었습니다.",
         startingNew: "새 질문을 시작합니다", waiting: "모델이 답변을 준비하고 있습니다",
         trace: "추론 과정", facts: "그래프 근거 후보", route: "질문 유형",
@@ -138,6 +160,10 @@
         chunk: "문단", page: "쪽", score: "점수", open: "열기", download: "다운로드",
         requestFailed: "요청에 실패했습니다", malformed: "서버 응답 형식이 올바르지 않습니다",
         generationFailed: "답변 생성에 실패했습니다. 추론 과정과 인용 출처를 확인하세요.",
+        invalidApiKey: "API 키가 거부되었습니다. 키를 확인하거나 새로 발급하세요.",
+        rateLimit: "무료 할당량 또는 호출 한도에 도달했습니다. 잠시 후 다시 시도하세요.",
+        providerRejected: "모델 제공자가 이 요청을 거부했습니다.",
+        providerUnavailable: "모델 제공자에 일시적으로 연결할 수 없습니다.",
         noAnswer: "생성된 답변이 없습니다. 추론 과정과 인용 출처를 확인하세요.",
         serverFailed: "요청에 실패했습니다. 서버 로그를 확인하세요."
       }
@@ -153,6 +179,9 @@
       question.placeholder = t("question");
       strategy.setAttribute("aria-label", t("strategy"));
       category.setAttribute("aria-label", t("category"));
+      generationModel.setAttribute("aria-label", t("model"));
+      apiKey.placeholder = t("apiKey");
+      apiKeyNote.textContent = t("apiKeyNote");
       askButton.textContent = activeController ? t("askAgain") : t("ask");
       stopButton.textContent = t("stop");
       tracePanel.querySelector("summary").textContent = t("trace");
@@ -171,6 +200,8 @@
       for (const option of [...strategy.options, ...category.options]) {
         option.textContent = optionLabels[option.value];
       }
+      generationModel.options[0].textContent =
+        language.value === "ko" ? "로컬" : "Local";
       localStorage.setItem("legalrag-language", language.value);
     }
 
@@ -178,6 +209,22 @@
       askButton.textContent = isBusy ? t("askAgain") : t("ask");
       stopButton.hidden = !isBusy;
       status.textContent = isBusy ? t("generating") : "";
+    }
+
+    function apiKeyStorageKey() {
+      return generationModel.value.startsWith("gemini-")
+        ? "legalrag-api-key:gemini"
+        : "legalrag-api-key:groq";
+    }
+
+    function applyGenerationModel() {
+      const hosted = generationModel.value !== "local";
+      apiKeyRow.hidden = !hosted;
+      apiKey.required = hosted;
+      apiKey.value = hosted
+        ? sessionStorage.getItem(apiKeyStorageKey()) || ""
+        : "";
+      sessionStorage.setItem("legalrag-generation-model", generationModel.value);
     }
 
     function stopActiveRequest(message = "Stopped.") {
@@ -489,6 +536,15 @@
       (navigator.language.startsWith("ko") ? "ko" : "en");
     language.addEventListener("change", applyLanguage);
     applyLanguage();
+    generationModel.value =
+      sessionStorage.getItem("legalrag-generation-model") || "local";
+    generationModel.addEventListener("change", applyGenerationModel);
+    apiKey.addEventListener("input", () => {
+      if (generationModel.value !== "local") {
+        sessionStorage.setItem(apiKeyStorageKey(), apiKey.value);
+      }
+    });
+    applyGenerationModel();
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -518,7 +574,13 @@
         const response = await fetch("ask", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({question: question.value, strategy: strategy.value, category: category.value}),
+          body: JSON.stringify({
+            question: question.value,
+            strategy: strategy.value,
+            category: category.value,
+            generation_model: generationModel.value,
+            api_key: generationModel.value === "local" ? null : apiKey.value.trim()
+          }),
           signal: controller.signal
         });
         if (requestId !== activeRequestId) return;
@@ -564,9 +626,13 @@
               answer.textContent = answerText;
             } else if (message.type === "error") {
               clearInterval(dotAnimation);
-              answer.textContent = language.value === "ko"
-                ? t("generationFailed")
-                : message.message || t("generationFailed");
+              const errorKeys = {
+                invalid_api_key: "invalidApiKey",
+                rate_limit: "rateLimit",
+                provider_rejected: "providerRejected",
+                provider_unavailable: "providerUnavailable"
+              };
+              answer.textContent = t(errorKeys[message.code] || "generationFailed");
               return;
             }
           }

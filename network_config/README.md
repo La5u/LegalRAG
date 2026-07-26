@@ -63,6 +63,9 @@ use both, don't rely on either alone:
 
 - `curl -i https://SERVER_NAME/ask -X POST -H 'Content-Type: application/json' -d '{"question":"test"}'`
   from your own machine should work (goes through the proxy).
+- On the backend host, the same request to `http://127.0.0.1:8000/ask`
+  without `X-Internal-Proxy-Secret` should return `403`. Supplying the value
+  configured in `LEGALRAG_PROXY_SECRET` should pass the proxy check.
 - `curl -i http://BACKEND_HOST:8000/ask -X POST ...` run directly against
   the backend from anywhere other than the frontend server should be
   refused at the network level (connection refused/timeout), not just

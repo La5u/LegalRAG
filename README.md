@@ -113,6 +113,19 @@ export LEGALRAG_GENERATION_MODEL="deepseek-v4-flash"
 ./scripts/dev
 ```
 
+The web interface also has an answer-model dropdown. `Local` uses the
+server-configured Ollama, vLLM, or hosted model. The other choices use the API
+key entered by the browser user:
+
+- `gemini-3.1-flash-lite` through the Gemini API
+- `qwen/qwen3.6-27b` through the Groq API
+
+These are fixed, free-tier-eligible choices; their quotas and availability are
+controlled by the providers. The key is kept in browser `sessionStorage`, sent
+only with hosted-model requests, and discarded when the browser tab closes.
+Use HTTPS: each hosted request sends the question and retrieved evidence to the
+selected provider.
+
 `scripts/index` only starts Neo4j and indexes documents. `scripts/dev` starts
 Neo4j, starts Ollama if needed, and launches the app without indexing. Use
 `scripts/dev` when you know the index is already current and want faster

@@ -22,6 +22,12 @@ from backend.config import (
 
 logger = logging.getLogger(__name__)
 _http_client: httpx.AsyncClient | None = None
+HOSTED_MODEL_URLS = {
+    "gemini-3.1-flash-lite": (
+        "https://generativelanguage.googleapis.com/v1beta/openai"
+    ),
+    "qwen/qwen3.6-27b": "https://api.groq.com/openai/v1",
+}
 
 
 def http_client() -> httpx.AsyncClient:
@@ -96,9 +102,10 @@ def vllm_payload(
     context: str,
     symbolic_context: str | None = None,
     max_tokens: int = MAX_OUTPUT_TOKENS,
+    model: str = GENERATION_MODEL,
 ) -> dict:
     return {
-        "model": GENERATION_MODEL,
+        "model": model,
         "messages": messages(query, context, symbolic_context),
         "stream": True,
         "temperature": TEMPERATURE,
@@ -112,18 +119,31 @@ async def stream_answer(
     context: str,
     callback,
     symbolic_context: str | None = None,
+    hosted_model: str | None = None,
+    api_key: str | None = None,
 ) -> None:
-    if LLM_PROVIDER in {"vllm", "openai_compatible"}:
-        base_url = (
-            f"{VLLM_URL.rstrip('/')}/v1"
-            if LLM_PROVIDER == "vllm"
-            else LLM_BASE_URL
-        )
+    if hosted_model or LLM_PROVIDER in {"vllm", "openai_compatible"}:
+        if hosted_model:
+            base_url = HOSTED_MODEL_URLS.get(hosted_model)
+            if base_url is None:
+                raise ValueError(f"Unsupported hosted model: {hosted_model!r}")
+            if not api_key:
+                raise ValueError("An API key is required for hosted models")
+            selected_model = hosted_model
+            selected_api_key = api_key
+        else:
+            base_url = (
+                f"{VLLM_URL.rstrip('/')}/v1"
+                if LLM_PROVIDER == "vllm"
+                else LLM_BASE_URL
+            )
+            selected_model = GENERATION_MODEL
+            selected_api_key = LLM_API_KEY
         if not base_url:
             raise ValueError("LEGALRAG_LLM_BASE_URL is required")
         headers = (
-            {"Authorization": f"Bearer {LLM_API_KEY}"}
-            if LLM_API_KEY
+            {"Authorization": f"Bearer {selected_api_key}"}
+            if selected_api_key
             else None
         )
         final_text_seen = False
@@ -134,8 +154,15 @@ async def stream_answer(
             await callback(token)
 
         request = vllm_payload(
-            query, context, symbolic_context=symbolic_context,
+            query,
+            context,
+            symbolic_context=symbolic_context,
+            model=selected_model,
         )
+        if hosted_model and selected_model.startswith("gemini-"):
+            request.pop("seed", None)
+        if hosted_model == "qwen/qwen3.6-27b":
+            request["reasoning_effort"] = "none"
         try:
             await stream_openai_compatible_payload(
                 request, track_final_text, base_url, headers,
@@ -158,7 +185,9 @@ async def stream_answer(
                 else None
             )
             await asyncio.sleep(min(float(retry_after or 0), 2.0))
-        if not final_text_seen and LLM_PROVIDER == "openai_compatible":
+        if not final_text_seen and (
+            hosted_model or LLM_PROVIDER == "openai_compatible"
+        ):
             logger.warning(
                 "Hosted model emitted no final text; retrying with a larger output budget."
             )

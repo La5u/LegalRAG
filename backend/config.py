@@ -45,6 +45,7 @@ OLLAMA_KEEP_ALIVE = os.getenv("LEGALRAG_OLLAMA_KEEP_ALIVE", "1m")
 VLLM_URL = os.getenv("LEGALRAG_VLLM_URL", "http://127.0.0.1:8001")
 LLM_BASE_URL = os.getenv("LEGALRAG_LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.getenv("LEGALRAG_LLM_API_KEY", "")
+PROXY_SECRET = os.getenv("LEGALRAG_PROXY_SECRET", "")
 
 NEO4J_URI = os.getenv("LEGALRAG_NEO4J_URI", "bolt://127.0.0.1:7687")
 NEO4J_USER = os.getenv("LEGALRAG_NEO4J_USER", "neo4j")

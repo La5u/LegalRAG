@@ -1,15 +1,18 @@
 import asyncio
+import hmac
 import json
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.rag import LegalRAG
+from backend.config import PROXY_SECRET
 from backend.llm import close_http_client
 from backend.retrieval import RetrievalUnavailable
 from backend.routing import route_reason
@@ -27,6 +30,28 @@ CATEGORIES = [
     "guidance",
     "qna",
 ]
+
+
+def require_proxy_secret(request: Request) -> None:
+    if not PROXY_SECRET:
+        return
+    supplied = request.headers.get("X-Internal-Proxy-Secret", "")
+    if not hmac.compare_digest(supplied, PROXY_SECRET):
+        raise HTTPException(status_code=403, detail="Invalid proxy credentials.")
+
+
+def generation_error_code(error: Exception) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        if status in {401, 403}:
+            return "invalid_api_key"
+        if status == 429:
+            return "rate_limit"
+        if status == 400:
+            return "provider_rejected"
+    if isinstance(error, httpx.TransportError):
+        return "provider_unavailable"
+    return "generation_failed"
 
 
 def _safe_raw_document_path(source_path: str) -> Path | None:
@@ -183,11 +208,18 @@ async def lifespan(app: FastAPI):
         await close_http_client()
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    dependencies=[Depends(require_proxy_secret)],
+)
 
 
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+    generation_model: Literal[
+        "local", "gemini-3.1-flash-lite", "qwen/qwen3.6-27b",
+    ] = "local"
+    api_key: str | None = Field(default=None, max_length=4096)
     strategy: Literal["vector", "graph", "neuro_symbolic"] = "graph"
     category: Literal[
         "auto", "all", "statute", "regulation", "precedent",
@@ -235,6 +267,13 @@ async def ask(
     request: Question,
     rag_system: Annotated[LegalRAG, Depends(get_rag)],
 ) -> StreamingResponse:
+    if request.generation_model != "local" and not (
+        request.api_key and request.api_key.strip()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="An API key is required for hosted models.",
+        )
     try:
         result = await asyncio.to_thread(
             rag_system.retrieve,
@@ -264,10 +303,17 @@ async def ask(
 
         async def generate() -> None:
             try:
+                generation_options = {}
+                if request.generation_model != "local":
+                    generation_options = {
+                        "hosted_model": request.generation_model,
+                        "api_key": request.api_key.strip(),
+                    }
                 await rag_system.generate_async(
                     request.question,
                     result,
                     send_token,
+                    **generation_options,
                 )
             except Exception as error:
                 await tokens.put(error)
@@ -284,6 +330,7 @@ async def ask(
                 if isinstance(token, Exception):
                     yield stream_event(
                         "error",
+                        code=generation_error_code(token),
                         message="Generation failed. Review the cited sources.",
                     )
                     await generation

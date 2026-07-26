@@ -4,6 +4,88 @@ import httpx
 from backend import llm
 
 
+def test_browser_selected_gemini_uses_request_key_and_model(monkeypatch):
+    captured = {}
+
+    async def fake_stream(
+        url, request, callback, parse_line, token_from_event, headers=None,
+    ):
+        captured.update(url=url, request=request, headers=headers)
+        await callback("answer")
+
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "ollama")
+    monkeypatch.setattr(llm, "stream_json_tokens", fake_stream)
+
+    async def callback(_token):
+        pass
+
+    import asyncio
+    asyncio.run(
+        llm.stream_answer(
+            "질문",
+            "문맥",
+            callback,
+            hosted_model="gemini-3.1-flash-lite",
+            api_key="browser-secret",
+        )
+    )
+
+    assert captured["url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
+    assert captured["headers"] == {"Authorization": "Bearer browser-secret"}
+    assert captured["request"]["model"] == "gemini-3.1-flash-lite"
+    assert "seed" not in captured["request"]
+
+
+def test_browser_selected_groq_model_requires_key(monkeypatch):
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "ollama")
+
+    async def callback(_token):
+        pass
+
+    import asyncio
+    with pytest.raises(ValueError, match="API key"):
+        asyncio.run(
+            llm.stream_answer(
+                "질문",
+                "문맥",
+                callback,
+                hosted_model="qwen/qwen3.6-27b",
+            )
+        )
+
+
+def test_browser_selected_groq_model_disables_reasoning(monkeypatch):
+    captured = {}
+
+    async def fake_stream(
+        url, request, callback, parse_line, token_from_event, headers=None,
+    ):
+        captured.update(url=url, request=request, headers=headers)
+        await callback("answer")
+
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "ollama")
+    monkeypatch.setattr(llm, "stream_json_tokens", fake_stream)
+
+    async def callback(_token):
+        pass
+
+    import asyncio
+    asyncio.run(
+        llm.stream_answer(
+            "질문",
+            "문맥",
+            callback,
+            hosted_model="qwen/qwen3.6-27b",
+            api_key="browser-secret",
+        )
+    )
+
+    assert captured["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert captured["request"]["reasoning_effort"] == "none"
+
+
 def test_openai_compatible_stream_uses_base_url_and_auth(monkeypatch):
     captured = {}
 
