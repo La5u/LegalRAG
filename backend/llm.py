@@ -15,9 +15,11 @@ from backend.config import (
     OLLAMA_KEEP_ALIVE,
     OLLAMA_THINK,
     OLLAMA_URL,
+    SLURM_AUTOSTART_VLLM,
     TEMPERATURE,
     VLLM_URL,
 )
+from backend.slurm_vllm import ensure_local_vllm
 
 
 logger = logging.getLogger(__name__)
@@ -121,6 +123,7 @@ async def stream_answer(
     symbolic_context: str | None = None,
     hosted_model: str | None = None,
     api_key: str | None = None,
+    on_status=None,
 ) -> None:
     if hosted_model or LLM_PROVIDER in {"vllm", "openai_compatible"}:
         if hosted_model:
@@ -132,6 +135,8 @@ async def stream_answer(
             selected_model = hosted_model
             selected_api_key = api_key
         else:
+            if LLM_PROVIDER == "vllm" and SLURM_AUTOSTART_VLLM:
+                await ensure_local_vllm(on_status=on_status)
             base_url = (
                 f"{VLLM_URL.rstrip('/')}/v1"
                 if LLM_PROVIDER == "vllm"

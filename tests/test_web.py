@@ -10,6 +10,7 @@ from starlette.requests import Request
 from backend.document import Document
 from backend.retrieval import RetrievalContext, RetrievalResult
 from backend.routing import QueryRoute
+from backend.slurm_vllm import SlurmGpuBusy, SlurmStartupTimeout, StatusUpdate
 from backend.web import (
     Question,
     ask,
@@ -108,6 +109,14 @@ def test_generation_error_code_for_provider_status(status, expected):
     assert generation_error_code(error) == expected
 
 
+def test_generation_error_code_for_slurm_gpu_busy():
+    assert generation_error_code(SlurmGpuBusy("busy")) == "gpu_busy"
+
+
+def test_generation_error_code_for_slurm_startup_timeout():
+    assert generation_error_code(SlurmStartupTimeout("timed out")) == "provider_unavailable"
+
+
 def test_ask_stream_uses_explicit_retrieval_result(monkeypatch):
     result = RetrievalResult(
         strategy="graph",
@@ -126,7 +135,7 @@ def test_ask_stream_uses_explicit_retrieval_result(monkeypatch):
         def retrieve(self, *_args, **_kwargs):
             return result
 
-        async def generate_async(self, _query, received_result, callback):
+        async def generate_async(self, _query, received_result, callback, **_options):
             assert received_result is result
             await callback("답변")
 
@@ -145,6 +154,45 @@ def test_ask_stream_uses_explicit_retrieval_result(monkeypatch):
     events = asyncio.run(collect_events())
 
     assert [event["type"] for event in events] == ["sources", "token", "done"]
+
+
+def test_ask_stream_relays_slurm_status_updates(monkeypatch):
+    result = RetrievalResult(
+        strategy="graph",
+        context=RetrievalContext(
+            query="질문",
+            route=QueryRoute(kind="general"),
+            source_paths=[],
+            is_summary_query=False,
+            is_contract_query=False,
+            is_case_query=False,
+        ),
+        evidence=[Document("근거", {"document_name": "법.hwpx"})],
+    )
+
+    class FakeRAG:
+        def retrieve(self, *_args, **_kwargs):
+            return result
+
+        async def generate_async(self, _query, _result, callback, on_status=None, **_options):
+            await on_status(StatusUpdate(phase="starting", elapsed=0.4, estimated_total=75))
+            await callback("답변")
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr("backend.web.asyncio.to_thread", run_inline)
+
+    async def collect_events():
+        response = await ask(Question(question="질문"), FakeRAG())
+        return [json.loads(line) async for line in response.body_iterator]
+
+    events = asyncio.run(collect_events())
+
+    assert [event["type"] for event in events] == ["sources", "status", "token", "done"]
+    status_event = events[1]
+    assert status_event["phase"] == "starting"
+    assert status_event["estimated_total"] == 75
 
 
 def test_ask_passes_hosted_model_and_key_to_generation(monkeypatch):
@@ -188,6 +236,7 @@ def test_ask_passes_hosted_model_and_key_to_generation(monkeypatch):
 
     asyncio.run(collect_events())
 
+    assert callable(captured.pop("on_status"))
     assert captured == {
         "hosted_model": "qwen/qwen3.6-27b",
         "api_key": "groq-secret",

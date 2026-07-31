@@ -288,6 +288,28 @@ Overridable env vars (defaults match the current lab box):
 `LEGALRAG_VLLM_REMOTE_PORT` (`18080`),
 `LEGALRAG_VLLM_LOCAL_PORT` (`8001`).
 
+### In-process autostart (when the app runs on the Slurm node itself)
+
+When the backend is deployed directly on the GPU/Slurm node (as with the
+public demo), there's no separate desktop to run `scripts/remote-vllm` from.
+Setting `LEGALRAG_SLURM_AUTOSTART_VLLM=1` makes `backend/slurm_vllm.py` do
+the equivalent check in-process, on the first request that needs local
+generation:
+
+- If vLLM is already reachable at `LEGALRAG_VLLM_URL`, use it immediately.
+- Otherwise, check `squeue`. If another job (not ours) is queued or running,
+  raise immediately — the request fails fast with a `gpu_busy` error rather
+  than waiting behind someone else's job — so a public demo never competes
+  with a lab member's job for the one shared GPU.
+- If the queue is otherwise empty, submit (`submit_if_needed.sh`) and poll
+  until vLLM answers, up to `LEGALRAG_SLURM_STARTUP_TIMEOUT` seconds
+  (default 360s) — cold start takes a few minutes for a 32B model.
+
+Env vars: `LEGALRAG_SLURM_AUTOSTART_VLLM` (`false`), `LEGALRAG_SLURM_JOB_NAME`
+(`legalrag_infer`), `LEGALRAG_SLURM_SUBMIT_DIR` (`~/legalrag-infer`),
+`LEGALRAG_SLURM_STARTUP_TIMEOUT` (`360`). Requires
+`LEGALRAG_LLM_PROVIDER=vllm`.
+
 ## Configuration
 
 Default embedding model:

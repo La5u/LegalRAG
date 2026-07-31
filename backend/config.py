@@ -47,6 +47,23 @@ LLM_BASE_URL = os.getenv("LEGALRAG_LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.getenv("LEGALRAG_LLM_API_KEY", "")
 PROXY_SECRET = os.getenv("LEGALRAG_PROXY_SECRET", "")
 
+# On-demand Slurm-managed vLLM: only submitted when the shared GPU queue is
+# otherwise empty, so the "Local" answer model never competes with another
+# lab member's job for the one available GPU.
+SLURM_AUTOSTART_VLLM = os.getenv(
+    "LEGALRAG_SLURM_AUTOSTART_VLLM", "false"
+).lower() in {"1", "true", "yes", "on"}
+SLURM_JOB_NAME = os.getenv("LEGALRAG_SLURM_JOB_NAME", "legalrag_infer")
+SLURM_SUBMIT_DIR = os.getenv(
+    "LEGALRAG_SLURM_SUBMIT_DIR", str(Path.home() / "legalrag-infer")
+)
+SLURM_STARTUP_TIMEOUT = int(os.getenv("LEGALRAG_SLURM_STARTUP_TIMEOUT", "360"))
+# Shown to visitors as "usually about Ns" while a cold-started job loads;
+# purely informational, not a hard limit (see SLURM_STARTUP_TIMEOUT for that).
+SLURM_COLD_START_ESTIMATE = int(
+    os.getenv("LEGALRAG_SLURM_COLD_START_ESTIMATE", "75")
+)
+
 NEO4J_URI = os.getenv("LEGALRAG_NEO4J_URI", "bolt://127.0.0.1:7687")
 NEO4J_USER = os.getenv("LEGALRAG_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("LEGALRAG_NEO4J_PASSWORD", "legalrag-password")

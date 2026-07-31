@@ -17,9 +17,9 @@ set -uo pipefail
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs
 
-MODEL="${LEGALRAG_MODEL:-$HOME/shared/models/Qwen/Qwen2.5-32B-Instruct}"
+MODEL="${LEGALRAG_MODEL:-$HOME/shared/models/Qwen/Qwen2.5-7B-Instruct}"
 PORT="${PORT:-18080}"
-IDLE_TIMEOUT="${IDLE_TIMEOUT_SECONDS:-1800}"
+IDLE_TIMEOUT="${IDLE_TIMEOUT_SECONDS:-600}"
 VLLM_LOG="logs/vllm-server-${SLURM_JOB_ID}.log"
 
 source /opt/miniforge3/etc/profile.d/conda.sh

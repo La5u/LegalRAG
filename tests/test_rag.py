@@ -80,7 +80,7 @@ def test_empty_evidence_returns_without_calling_model(monkeypatch):
 def test_generation_uses_compact_document_metadata(monkeypatch):
     captured = {}
 
-    async def capture_stream(query, context, callback, symbolic_context=None):
+    async def capture_stream(query, context, callback, symbolic_context=None, on_status=None):
         captured["context"] = context
 
     monkeypatch.setattr("backend.rag.stream_answer", capture_stream)

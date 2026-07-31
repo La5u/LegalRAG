@@ -16,6 +16,7 @@ from backend.config import PROXY_SECRET
 from backend.llm import close_http_client
 from backend.retrieval import RetrievalUnavailable
 from backend.routing import route_reason
+from backend.slurm_vllm import SlurmGpuBusy, SlurmStartupTimeout, StatusUpdate
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_DOCUMENTS_PATH = PROJECT_ROOT / "documents" / "raw"
@@ -41,6 +42,10 @@ def require_proxy_secret(request: Request) -> None:
 
 
 def generation_error_code(error: Exception) -> str:
+    if isinstance(error, SlurmGpuBusy):
+        return "gpu_busy"
+    if isinstance(error, SlurmStartupTimeout):
+        return "provider_unavailable"
     if isinstance(error, httpx.HTTPStatusError):
         status = error.response.status_code
         if status in {401, 403}:
@@ -301,6 +306,9 @@ async def ask(
         async def send_token(token: str) -> None:
             await tokens.put(token)
 
+        async def send_status(status: StatusUpdate) -> None:
+            await tokens.put(status)
+
         async def generate() -> None:
             try:
                 generation_options = {}
@@ -313,6 +321,7 @@ async def ask(
                     request.question,
                     result,
                     send_token,
+                    on_status=send_status,
                     **generation_options,
                 )
             except Exception as error:
@@ -327,6 +336,14 @@ async def ask(
                 token = await tokens.get()
                 if token is None:
                     break
+                if isinstance(token, StatusUpdate):
+                    yield stream_event(
+                        "status",
+                        phase=token.phase,
+                        elapsed=round(token.elapsed, 1),
+                        estimated_total=token.estimated_total,
+                    )
+                    continue
                 if isinstance(token, Exception):
                     yield stream_event(
                         "error",
