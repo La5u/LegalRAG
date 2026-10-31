@@ -1,6 +1,7 @@
 import asyncio
 import hmac
 import json
+import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.rag import LegalRAG
-from backend.config import PROXY_SECRET
+from backend.config import ALLOW_HOSTED_MODELS, LLM_PROVIDER, PROXY_SECRET
 from backend.llm import close_http_client
 from backend.retrieval import RetrievalUnavailable
 from backend.routing import route_reason
@@ -205,6 +206,11 @@ def compact_trace(trace: dict, category: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if LLM_PROVIDER == "openai_compatible":
+        logging.getLogger(__name__).warning(
+            "LEGALRAG_LLM_PROVIDER=openai_compatible: questions and evidence "
+            "leave the machine and are sent to the configured LLM endpoint."
+        )
     app.state.rag = LegalRAG()
     try:
         yield
@@ -244,6 +250,11 @@ def home() -> FileResponse:
     return FileResponse(PROJECT_ROOT / "frontend" / "index.html")
 
 
+@app.get("/config")
+def public_config() -> dict:
+    return {"allow_hosted_models": ALLOW_HOSTED_MODELS}
+
+
 @app.get("/documents")
 def list_documents(rag_system: Annotated[LegalRAG, Depends(get_rag)]) -> dict:
     return {"documents": rag_system.list_documents()}
@@ -272,6 +283,12 @@ async def ask(
     request: Question,
     rag_system: Annotated[LegalRAG, Depends(get_rag)],
 ) -> StreamingResponse:
+    if request.generation_model != "local" and not ALLOW_HOSTED_MODELS:
+        raise HTTPException(
+            status_code=403,
+            detail="Hosted models are disabled. Use local generation or ask an "
+            "administrator to enable LEGALRAG_ALLOW_HOSTED_MODELS.",
+        )
     if request.generation_model != "local" and not (
         request.api_key and request.api_key.strip()
     ):

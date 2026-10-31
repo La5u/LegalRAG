@@ -13,3 +13,17 @@ evaluation/*results*.jsonl
 evaluation/*report*.json
 evaluation/generated_candidates.jsonl
 evaluation/*.before_*.jsonl
+
+# Legal corpus: third-party terms vary, users download it themselves.
+documents/raw/*
+!documents/raw/samples/
+documents/excluded/
+documents/manual/
+
+# Internal notes, not part of the public release.
+/DL Lab GPU Server User Guide.pdf
+/issues.txt
+/lbox_ideas.txt
+/todo-web.txt
+/TODO.md
+/docs/comparison-with-lawfirm-poc.md

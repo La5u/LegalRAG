@@ -1,8 +1,17 @@
 # LegalRAG
 
-A Linux-only Korean-first legal RAG prototype. It ingests Korean law HWPX, PDF,
-and TXT files, stores chunks and embeddings in Neo4j, retrieves with vector
-search, and generates cited answers through a local Ollama or vLLM model.
+A Linux-only Korean-first legal RAG prototype that runs entirely on your own
+machine. It ingests Korean law HWPX, PDF, and TXT files, stores chunks and
+embeddings in Neo4j, retrieves with vector search, and generates cited answers
+through a local Ollama or vLLM model. After the models are downloaded, no
+internet connection is needed and no document leaves the machine.
+
+Originally developed by [Lasu](https://github.com/La5u). Licensed under
+[Apache 2.0](LICENSE).
+
+- **Quick start:** [docs/SETUP.md](docs/SETUP.md) (설치 안내)
+- **Verify it offline yourself:** [docs/OFFLINE_TEST.md](docs/OFFLINE_TEST.md)
+  (오프라인 검증)
 
 > Technical prototype only. Do not treat generated answers as legal advice.
 
@@ -113,9 +122,10 @@ export LEGALRAG_GENERATION_MODEL="deepseek-v4-flash"
 ./scripts/dev
 ```
 
-The web interface also has an answer-model dropdown. `Local` uses the
-server-configured Ollama, vLLM, or hosted model. The other choices use the API
-key entered by the browser user:
+Hosted models are off by default, so a fresh install never sends data off the
+machine. Setting `LEGALRAG_ALLOW_HOSTED_MODELS=true` adds an answer-model
+dropdown to the web interface. `Local` uses the server-configured Ollama, vLLM,
+or hosted model. The other choices use the API key entered by the browser user:
 
 - `gemini-3.1-flash-lite` through the Gemini API
 - `qwen/qwen3.6-27b` through the Groq API
@@ -240,7 +250,7 @@ LEGALRAG_VLLM_URL=http://127.0.0.1:8001 \
 ## Remote Slurm-Managed vLLM Inference
 
 Instead of running the generation model locally, `scripts/remote-vllm` submits
-an on-demand vLLM inference server as a Slurm job on a shared lab GPU box,
+an on-demand vLLM inference server as a Slurm job on a shared GPU server,
 waits for it to start, and opens an SSH tunnel so the app can reach it at
 `http://127.0.0.1:8001` like any other vLLM endpoint.
 
@@ -281,17 +291,15 @@ LEGALRAG_GENERATION_MODEL=legalrag \
 Since Slurm queues the job automatically when the GPU is busy with someone
 else's work, `up` can be run any time — it just waits longer.
 
-Overridable env vars (defaults match the current lab box):
-`LEGALRAG_VLLM_REMOTE_HOST` (`gpu.example.com`),
-`LEGALRAG_VLLM_REMOTE_USER` (`user`),
+Required env vars: `LEGALRAG_VLLM_REMOTE_HOST`, `LEGALRAG_VLLM_REMOTE_USER`.
+Optional env vars:
 `LEGALRAG_VLLM_REMOTE_DIR` (`legalrag-infer`),
 `LEGALRAG_VLLM_REMOTE_PORT` (`18080`),
 `LEGALRAG_VLLM_LOCAL_PORT` (`8001`).
 
 ### In-process autostart (when the app runs on the Slurm node itself)
 
-When the backend is deployed directly on the GPU/Slurm node (as with the
-public demo), there's no separate desktop to run `scripts/remote-vllm` from.
+When the backend is deployed directly on the GPU/Slurm node there's no separate desktop to run `scripts/remote-vllm` from.
 Setting `LEGALRAG_SLURM_AUTOSTART_VLLM=1` makes `backend/slurm_vllm.py` do
 the equivalent check in-process, on the first request that needs local
 generation:
@@ -299,8 +307,8 @@ generation:
 - If vLLM is already reachable at `LEGALRAG_VLLM_URL`, use it immediately.
 - Otherwise, check `squeue`. If another job (not ours) is queued or running,
   raise immediately — the request fails fast with a `gpu_busy` error rather
-  than waiting behind someone else's job — so a public demo never competes
-  with a lab member's job for the one shared GPU.
+  than waiting behind someone else's job — so the app never competes
+  with someone else's job for a shared GPU.
 - If the queue is otherwise empty, submit (`submit_if_needed.sh`) and poll
   until vLLM answers, up to `LEGALRAG_SLURM_STARTUP_TIMEOUT` seconds
   (default 360s) — cold start takes a few minutes for a 32B model.
@@ -394,6 +402,13 @@ docker compose start neo4j
 
 ## Documents
 
+The repository ships one fictional sample contract under
+`documents/raw/samples/`. The rest of the corpus listed in
+`documents/source_manifest.csv` is not redistributed, because its sources have
+different terms. Registered files that are not present are skipped at indexing.
+`scripts/download_legal_documents.py` fetches the public sources in
+`documents/download_plan.json`; check each source's terms yourself.
+
 Register Korean law HWPX files, selectable-text PDFs, or plain UTF-8 TXT files in
 `documents/source_manifest.csv`, and place the assets under `documents/raw/`.
 The manifest controls inclusion and supplies source metadata. HWPX and PDF
@@ -472,3 +487,10 @@ The browser app labels these modes as `Vector`, `GraphRAG`, and
   for sensitive on-premise legal use.
 - **Evaluation** — The `evaluation/` module benchmarks retrieval precision
   and answer quality across strategies.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE). The
+license covers this code and the sample contract. Dependencies and services you
+install have their own terms, including Neo4j Community (GPLv3), the embedding
+and generation models, and any legal documents you download.

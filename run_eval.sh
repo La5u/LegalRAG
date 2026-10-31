@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/user/coding/LegalRAG || exit 1
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 source .venv/bin/activate
 export LEGALRAG_GENERATION_MODEL=qwen2.5:1.5b-instruct
 export LEGALRAG_JUDGE_MODEL=qwen2.5:1.5b-instruct

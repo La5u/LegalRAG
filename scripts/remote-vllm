@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Orchestrates the Slurm-managed vLLM inference server on the lab GPU box:
+# Orchestrates the Slurm-managed vLLM inference server on a remote GPU server:
 # submit the job if one isn't already queued/running, wait for it to reach
 # RUNNING, open an SSH tunnel to its localhost-only port, and wait for vLLM
 # itself to answer. `up` runs the whole sequence; the rest are for manual use.
 set -euo pipefail
 
-REMOTE_HOST="${LEGALRAG_VLLM_REMOTE_HOST:-gpu.example.com}"
-REMOTE_USER="${LEGALRAG_VLLM_REMOTE_USER:-user}"
+REMOTE_HOST="${LEGALRAG_VLLM_REMOTE_HOST:-}"
+REMOTE_USER="${LEGALRAG_VLLM_REMOTE_USER:-}"
+if [[ -z "$REMOTE_HOST" || -z "$REMOTE_USER" ]]; then
+  echo "Set LEGALRAG_VLLM_REMOTE_HOST and LEGALRAG_VLLM_REMOTE_USER before using remote-vllm." >&2
+  exit 2
+fi
 REMOTE_DIR="${LEGALRAG_VLLM_REMOTE_DIR:-legalrag-infer}"
 REMOTE_PORT="${LEGALRAG_VLLM_REMOTE_PORT:-18080}"
 LOCAL_PORT="${LEGALRAG_VLLM_LOCAL_PORT:-8001}"

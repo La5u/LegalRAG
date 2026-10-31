@@ -1,9 +1,8 @@
 """On-demand Slurm-managed vLLM for the "Local" answer model.
 
-The GPU this runs on is shared lab infrastructure with a strict one-job-at-a-time
-policy. Before committing to local inference, check the Slurm queue: only submit
-the on-demand vLLM job when the queue is otherwise empty, so a public demo never
-competes with another lab member's job for the one available GPU. If the queue is
+This is for a shared GPU server with a one-job-at-a-time policy. Before committing to local inference, check the Slurm queue: only submit
+the on-demand vLLM job when the queue is otherwise empty, so the app never
+competes with another user's job for the one available GPU. If the queue is
 busy, callers should fail gracefully and let the visitor fall back to a hosted
 model with their own API key instead.
 """

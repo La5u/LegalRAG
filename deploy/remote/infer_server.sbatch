@@ -9,21 +9,22 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #
+# Adapt the partition above to your cluster.
 # On-demand vLLM inference server for LegalRAG, sized to release the GPU
-# on its own instead of sitting idle (lab policy: "Do not leave idle GPU
-# allocations"). PORT and IDLE_TIMEOUT_SECONDS come in via `sbatch --export`.
+# on its own instead of sitting idle (shared GPUs should not sit
+# idle). PORT and IDLE_TIMEOUT_SECONDS come in via `sbatch --export`.
 
 set -uo pipefail
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs
 
-MODEL="${LEGALRAG_MODEL:-$HOME/shared/models/Qwen/Qwen2.5-7B-Instruct}"
+MODEL="${LEGALRAG_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 PORT="${PORT:-18080}"
 IDLE_TIMEOUT="${IDLE_TIMEOUT_SECONDS:-600}"
 VLLM_LOG="logs/vllm-server-${SLURM_JOB_ID}.log"
 
-source /opt/miniforge3/etc/profile.d/conda.sh
-conda activate /home/user/.conda/envs/legalrag-vllm
+source "${LEGALRAG_CONDA_SH:-/opt/miniforge3/etc/profile.d/conda.sh}"
+conda activate "${LEGALRAG_CONDA_ENV:-legalrag-vllm}"
 
 echo "=== SLURM JOB INFO ==="
 echo "JOB_ID=$SLURM_JOB_ID"

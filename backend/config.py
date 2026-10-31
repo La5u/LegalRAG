@@ -40,6 +40,9 @@ EMBEDDING_PASSAGE_PREFIX = EMBEDDING_PROFILE.get("passage_prefix", "")
 GENERATION_MODEL = os.getenv("LEGALRAG_GENERATION_MODEL", "qwen3.5:4b")
 JUDGE_MODEL = os.getenv("LEGALRAG_JUDGE_MODEL", "qwen2.5:1.5b-instruct")
 LLM_PROVIDER = os.getenv("LEGALRAG_LLM_PROVIDER", "ollama").lower()
+ALLOW_HOSTED_MODELS = os.getenv(
+    "LEGALRAG_ALLOW_HOSTED_MODELS", "false"
+).lower() in {"1", "true", "yes", "on"}
 OLLAMA_URL = os.getenv("LEGALRAG_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_KEEP_ALIVE = os.getenv("LEGALRAG_OLLAMA_KEEP_ALIVE", "1m")
 VLLM_URL = os.getenv("LEGALRAG_VLLM_URL", "http://127.0.0.1:8001")
@@ -48,8 +51,8 @@ LLM_API_KEY = os.getenv("LEGALRAG_LLM_API_KEY", "")
 PROXY_SECRET = os.getenv("LEGALRAG_PROXY_SECRET", "")
 
 # On-demand Slurm-managed vLLM: only submitted when the shared GPU queue is
-# otherwise empty, so the "Local" answer model never competes with another
-# lab member's job for the one available GPU.
+# otherwise empty, so the "Local" answer model never competes with
+# another user's job for the one available GPU.
 SLURM_AUTOSTART_VLLM = os.getenv(
     "LEGALRAG_SLURM_AUTOSTART_VLLM", "false"
 ).lower() in {"1", "true", "yes", "on"}

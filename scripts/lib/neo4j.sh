@@ -35,8 +35,8 @@ ensure_neo4j_podman() {
 
   podman run -d \
     --name "$container_name" \
-    -p 7474:7474 \
-    -p 7687:7687 \
+    -p 127.0.0.1:7474:7474 \
+    -p 127.0.0.1:7687:7687 \
     -e "NEO4J_AUTH=neo4j/$neo4j_password" \
     -v legalrag_neo4j_data:/data \
     -v legalrag_neo4j_logs:/logs \

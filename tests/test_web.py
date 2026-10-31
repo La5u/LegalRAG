@@ -23,13 +23,21 @@ from backend.web import (
 PDF_PATH = "contracts/상가건물_임대차_표준계약서.pdf"
 
 
-def test_raw_document_opens_pdf_inline():
+@pytest.fixture
+def local_pdf(tmp_path, monkeypatch):
+    path = tmp_path / PDF_PATH
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr("backend.web.RAW_DOCUMENTS_PATH", tmp_path)
+
+
+def test_raw_document_opens_pdf_inline(local_pdf):
     response = raw_document(PDF_PATH)
 
     assert response.headers["content-disposition"].startswith("inline;")
 
 
-def test_raw_document_downloads_pdf_as_attachment():
+def test_raw_document_downloads_pdf_as_attachment(local_pdf):
     response = raw_document(PDF_PATH, download=True)
 
     assert response.headers["content-disposition"].startswith("attachment;")
@@ -69,7 +77,8 @@ def test_proxy_secret_is_required_only_when_configured(monkeypatch):
     require_proxy_secret(authorized)
 
 
-def test_hosted_model_requires_key_before_retrieval():
+def test_hosted_model_requires_key_before_retrieval(monkeypatch):
+    monkeypatch.setattr("backend.web.ALLOW_HOSTED_MODELS", True)
     class FakeRAG:
         def retrieve(self, *_args, **_kwargs):
             raise AssertionError("retrieval must not run without an API key")
@@ -196,6 +205,7 @@ def test_ask_stream_relays_slurm_status_updates(monkeypatch):
 
 
 def test_ask_passes_hosted_model_and_key_to_generation(monkeypatch):
+    monkeypatch.setattr("backend.web.ALLOW_HOSTED_MODELS", True)
     result = RetrievalResult(
         strategy="graph",
         context=RetrievalContext(
@@ -241,3 +251,40 @@ def test_ask_passes_hosted_model_and_key_to_generation(monkeypatch):
         "hosted_model": "qwen/qwen3.6-27b",
         "api_key": "groq-secret",
     }
+
+
+@pytest.mark.parametrize("model", ["gemini-3.1-flash-lite", "qwen/qwen3.6-27b"])
+def test_hosted_models_disabled_before_retrieval(monkeypatch, model):
+    monkeypatch.setattr("backend.web.ALLOW_HOSTED_MODELS", False)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(ask(Question(
+            question="질문", generation_model=model, api_key="secret",
+        ), object()))
+    assert error.value.status_code == 403
+    assert "LEGALRAG_ALLOW_HOSTED_MODELS" in error.value.detail
+
+
+def test_public_config_reflects_hosted_model_policy(monkeypatch):
+    from backend.web import public_config
+
+    for allowed in (False, True):
+        monkeypatch.setattr("backend.web.ALLOW_HOSTED_MODELS", allowed)
+        assert public_config() == {"allow_hosted_models": allowed}
+
+
+def test_explicit_openai_provider_warns_at_startup(monkeypatch, caplog):
+    from backend import web
+
+    class FakeRAG:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(web, "LegalRAG", FakeRAG)
+    monkeypatch.setattr(web, "LLM_PROVIDER", "openai_compatible")
+
+    async def start():
+        async with web.lifespan(web.app):
+            pass
+
+    asyncio.run(start())
+    assert "questions and evidence leave the machine" in caplog.text

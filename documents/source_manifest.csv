@@ -294,3 +294,4 @@ documents/raw/regulations/가맹사업거래의 공정화에 관한 법률 시�
 documents/manual/court_forms/225 대여금청구의 소(약정이자 월 2프로).hwp,pleading_template,Korea,ko,대한법률구조공단,https://www.klac.or.kr/legalinfo/legalFrm.do,공공누리 제2유형,false,Original HWP 5.0 form; excluded until text extraction and currency review are complete.
 "documents/manual/court_forms/228 대여금청구의 소(연대보증인이 있는 경우).hwp",pleading_template,Korea,ko,대한법률구조공단,https://www.klac.or.kr/legalinfo/legalFrm.do,공공누리 제2유형,false,Original HWP 5.0 form; excluded until text extraction is verified.
 "documents/manual/court_forms/234 대여금청구의 소(채무자 사망, 상속인을 피고로).hwp",pleading_template,Korea,ko,대한법률구조공단,https://www.klac.or.kr/legalinfo/legalFrm.do,공공누리 제2유형,false,Original HWP 5.0 form; excluded until text extraction is verified.
+documents/raw/samples/샘플_소프트웨어개발용역계약서.txt,contract,Korea,ko,LegalRAG synthetic sample,,Apache-2.0 (synthetic sample written for this project),true,Fictional contract for the offline verification test (docs/OFFLINE_TEST.md).

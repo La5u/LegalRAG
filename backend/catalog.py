@@ -125,14 +125,16 @@ def unregistered_raw_assets() -> list[str]:
     )
 
 
+def missing_assets() -> list[DocumentAsset]:
+    return [asset for asset in load_assets() if not asset.path.is_file()]
+
+
 def manifest_errors() -> list[str]:
     errors = []
     for asset in load_assets():
         if not asset.include_in_index:
             continue
-        if not asset.path.is_file():
-            errors.append(f"active asset is missing: {asset.source_path}")
-        elif asset.path.suffix.casefold() not in SUPPORTED_SUFFIXES:
+        if asset.path.suffix.casefold() not in SUPPORTED_SUFFIXES:
             errors.append(f"active asset has unsupported format: {asset.source_path}")
     errors.extend(
         f"raw asset is not registered: {source_path}"

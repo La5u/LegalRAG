@@ -2,7 +2,7 @@ import argparse
 import re
 from pathlib import Path
 
-from backend.catalog import PROJECT_ROOT, manifest_errors, selected_index_assets
+from backend.catalog import PROJECT_ROOT, manifest_errors, missing_assets, selected_index_assets
 from backend.chunker import chunk_text
 from backend.index_cache import load_cached_chunks, save_cached_chunks
 from backend.loaders import load_document
@@ -44,6 +44,12 @@ def main() -> None:
     catalog_errors = manifest_errors()
     if catalog_errors:
         raise RuntimeError("Invalid document manifest:\n- " + "\n- ".join(catalog_errors))
+    missing_count = len(missing_assets())
+    if missing_count:
+        print(
+            f"{missing_count} registered documents are not present locally; "
+            "skipped (see scripts/download_legal_documents.py)"
+        )
     assets = selected_index_assets()
     document_paths = [asset.path for asset in assets]
     metadata_by_path = {asset.path: asset.index_metadata() for asset in assets}

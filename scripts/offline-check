@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+source "$PROJECT_ROOT/scripts/lib/runtime.sh"
+source "$PROJECT_ROOT/scripts/lib/ollama.sh"
+source "$PROJECT_ROOT/scripts/lib/llm.sh"
+
+PYTHON="$(resolve_python)"
+case "${1:-}" in
+  --allow-network)
+    echo "WARNING: --allow-network bypasses the internet check. This is a dry run, not proof of offline operation." >&2
+    ;;
+  "") "$PYTHON" -m scripts.offline_check --check-network ;;
+  *) echo "Usage: $0 [--allow-network]" >&2; exit 2 ;;
+esac
+if (( $# > 1 )); then
+  echo "Usage: $0 [--allow-network]" >&2
+  exit 2
+fi
+
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 LEGALRAG_ALLOW_HOSTED_MODELS=false
+export LEGALRAG_LLM_PROVIDER="${LEGALRAG_LLM_PROVIDER:-ollama}"
+case "$LEGALRAG_LLM_PROVIDER" in
+  ollama|vllm) ;;
+  *) echo "Offline check requires LEGALRAG_LLM_PROVIDER=ollama or vllm." >&2; exit 2 ;;
+esac
+if [[ "${LEGALRAG_VLLM_REMOTE:-0}" == "1" ]]; then
+  echo "Offline check requires a local LLM; disable LEGALRAG_VLLM_REMOTE." >&2
+  exit 2
+fi
+
+# Refuse an occupied port so the check cannot accidentally query another server.
+"$PYTHON" - <<'PY'
+import socket
+with socket.socket() as listener:
+    try:
+        listener.bind(("127.0.0.1", 8000))
+    except OSError as error:
+        raise SystemExit(f"Offline check needs a free 127.0.0.1:8000: {error}")
+PY
+
+"$PROJECT_ROOT/scripts/index"
+ensure_llm "$PYTHON" "/tmp/legalrag-offline-ollama.log"
+
+SERVER_PID=""
+cleanup() {
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM
+"$PYTHON" -m uvicorn backend.web:app --host 127.0.0.1 --port 8000 \
+  > /tmp/legalrag-offline-web.log 2>&1 &
+SERVER_PID=$!
+"$PYTHON" -m scripts.offline_check --server-pid "$SERVER_PID"
