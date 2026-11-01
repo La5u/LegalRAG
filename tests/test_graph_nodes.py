@@ -6,7 +6,6 @@ from backend.graph_index import (
     is_legal_reference_concept,
     is_noisy_concept,
 )
-from backend.constants import CONCEPT_STOP_TERMS
 
 
 # ---------------------------------------------------------------------------

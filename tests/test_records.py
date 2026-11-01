@@ -1,4 +1,3 @@
-import pytest
 
 from backend.document import Document
 from backend.records import chunk_meta, chunk_return_fields

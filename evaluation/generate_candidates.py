@@ -457,7 +457,7 @@ def generate_for_qna(
 def generate_for_document(source_path: Path) -> list[dict]:
     try:
         text = load_document(source_path)
-    except Exception as e:
+    except Exception:
         return []
     if not text or len(text) < MIN_CHARS:
         return []

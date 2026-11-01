@@ -116,9 +116,9 @@ environment rather than a repository file:
 
 ```bash
 export LEGALRAG_LLM_PROVIDER="openai_compatible"
-export LEGALRAG_LLM_BASE_URL="https://opencode.ai/zen/go/v1"
+export LEGALRAG_LLM_BASE_URL="https://api.example.com/v1"
 export LEGALRAG_LLM_API_KEY="..."
-export LEGALRAG_GENERATION_MODEL="deepseek-v4-flash"
+export LEGALRAG_GENERATION_MODEL="your-model-name"
 ./scripts/dev
 ```
 
@@ -189,6 +189,12 @@ replacing the app container does not delete the indexed database.
 
 ## How To Test
 
+Unit tests:
+
+```bash
+python -m pytest -q
+```
+
 Neo4j integration checks:
 
 ```bash
@@ -225,8 +231,8 @@ podman volume exists legalrag_neo4j_data || podman volume create legalrag_neo4j_
 podman volume exists legalrag_neo4j_logs || podman volume create legalrag_neo4j_logs
 podman run -d \
   --name legalrag-neo4j \
-  -p 7474:7474 \
-  -p 7687:7687 \
+  -p 127.0.0.1:7474:7474 \
+  -p 127.0.0.1:7687:7687 \
   -e NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-legalrag-password} \
   -v legalrag_neo4j_data:/data \
   -v legalrag_neo4j_logs:/logs \
@@ -494,3 +500,8 @@ Licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE). The
 license covers this code and the sample contract. Dependencies and services you
 install have their own terms, including Neo4j Community (GPLv3), the embedding
 and generation models, and any legal documents you download.
+
+The question sets in `evaluation/` are not covered by that license where they
+derive from third-party documents. Entries whose `source_path` is under
+`documents/raw/precedents/lbox_open/` derive from LBOX Open, which is licensed
+CC BY-NC 4.0 (non-commercial).
