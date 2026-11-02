@@ -15,6 +15,50 @@ Originally developed by [Lasu](https://github.com/La5u). Licensed under
 
 > Technical prototype only. Do not treat generated answers as legal advice.
 
+## Worked Example / 예시
+
+The repository ships a fictional contract,
+[`documents/raw/samples/샘플_소프트웨어개발용역계약서.txt`](documents/raw/samples/샘플_소프트웨어개발용역계약서.txt),
+so you can try LegalRAG without downloading any legal documents. After
+[setup](docs/SETUP.md), run `./scripts/run`. The other documents listed in the
+manifest are skipped when they are not present. Then open
+`http://127.0.0.1:8000`, choose `GraphRAG`, and ask:
+
+> 샘플 소프트웨어 개발 용역 계약서에서 납품이 늦어지면 지체상금은 하루에 얼마이고
+> 최대 한도는 얼마인가요?
+
+The same question can be sent from a terminal:
+
+```bash
+curl -N http://127.0.0.1:8000/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "샘플 소프트웨어 개발 용역 계약서에서 납품이 늦어지면 지체상금은 하루에 얼마이고 최대 한도는 얼마인가요?", "strategy": "graph"}'
+```
+
+**Expected answer.** The late-delivery penalty is 2.5/1,000 of the contract
+price per day of delay, and the total is capped at 8/100 of the contract price.
+The wording will vary by model, but these two ratios should be in the answer.
+
+> 지체상금은 지체일수 1일당 계약금액의 1천분의 2.5이며, 총액은 계약금액의 100분의 8을
+> 초과할 수 없습니다 (제9조제1항·제2항).
+
+**Supporting clause.** The answer should cite the sample file, and the cited
+evidence should contain this text from **제9조(지체상금)**:
+
+> ① 을이 제7조제1항의 납품기한까지 산출물을 납품하지 못한 경우, 을은 지체일수 1일당
+> 계약금액의 1천분의 2.5에 해당하는 지체상금을 갑에게 지급하여야 한다.
+>
+> ② 제1항의 지체상금 총액은 계약금액의 100분의 8을 초과할 수 없다.
+
+To check the citation, open the sample file and find 제9조. The contract price
+in 제4조제1항 is ₩123,000,000, which works out to ₩307,500 per day and a cap
+of ₩9,840,000. The values are deliberately unusual, so a correct answer has to
+come from the contract, not from the model's general knowledge.
+
+`./scripts/offline-check` asks this exact question with the network
+disconnected and checks the answer and citation automatically. See
+[docs/OFFLINE_TEST.md](docs/OFFLINE_TEST.md).
+
 ## Pipeline
 
 ```text
@@ -496,12 +540,12 @@ The browser app labels these modes as `Vector`, `GraphRAG`, and
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE). The
-license covers this code and the sample contract. Dependencies and services you
-install have their own terms, including Neo4j Community (GPLv3), the embedding
-and generation models, and any legal documents you download.
+Everything in this repository, including the code, documentation, sample
+contract, and evaluation questions, is licensed under the
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for copyright and
+contributor credits.
 
-The question sets in `evaluation/` are not covered by that license where they
-derive from third-party documents. Entries whose `source_path` is under
-`documents/raw/precedents/lbox_open/` derive from LBOX Open, which is licensed
-CC BY-NC 4.0 (non-commercial).
+The repository does not include the legal documents listed in
+`documents/source_manifest.csv`. If you download them, they keep their own
+terms, which are recorded in the manifest. Dependencies, models, and services
+you install also have their own terms, including Neo4j Community (GPLv3).
