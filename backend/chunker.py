@@ -7,7 +7,6 @@ from backend.constants import STRUCTURE_KINDS, STRUCTURE_PATTERNS
 from backend.document import Document
 from backend.text import split_sentences
 
-MAX_SHORT_BLOCK_WORDS = 50
 PAGE_MARKER_PATTERN = re.compile(r"^\[\[PAGE:(\d+)\]\]$")
 AMENDMENT_NOTE_PATTERN = re.compile(
     r"^\[(?:전문개정|본조신설|제목개정|시행일|본조삭제|종전의).*\]$"

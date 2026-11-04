@@ -413,7 +413,7 @@ def generate_for_qna(
         s = s.strip()
         if not s:
             continue
-        if "?" in s or "?" in s:
+        if "?" in s or "？" in s:
             if current_q and current_a_lines:
                 qa_pairs.append((current_q, " ".join(current_a_lines)))
             current_q = s[:100]
