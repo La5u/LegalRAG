@@ -223,3 +223,56 @@ def test_model_payload_routes_judge_to_hosted_provider(monkeypatch):
     assert captured["base_url"] == "https://example.test/v1"
     assert captured["headers"] == {"Authorization": "Bearer secret"}
     assert tokens == ["1.0"]
+
+
+def test_model_payload_adds_v1_for_local_vllm(monkeypatch):
+    captured = {}
+
+    async def fake_stream(request, callback, base_url, headers=None):
+        captured.update(base_url=base_url)
+
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "vllm")
+    monkeypatch.setattr(llm, "VLLM_URL", "http://127.0.0.1:8001/")
+    monkeypatch.setattr(llm, "stream_openai_compatible_payload", fake_stream)
+
+    async def callback(_token):
+        pass
+
+    import asyncio
+    asyncio.run(llm.stream_model_payload({"model": "judge", "messages": []}, callback))
+
+    assert captured["base_url"] == "http://127.0.0.1:8001/v1"
+
+
+def test_local_vllm_retries_after_transient_failure(monkeypatch):
+    calls = []
+
+    async def fake_stream(url, request, callback, parse_line, token_from_event, headers=None):
+        calls.append(url)
+        if len(calls) == 1:
+            response = httpx.Response(503, request=httpx.Request("POST", url))
+            raise httpx.HTTPStatusError("loading", request=response.request, response=response)
+        await callback("answer")
+
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "vllm")
+    monkeypatch.setattr(llm, "SLURM_AUTOSTART_VLLM", False)
+    monkeypatch.setattr(llm, "stream_json_tokens", fake_stream)
+    tokens = []
+
+    async def callback(token):
+        tokens.append(token)
+
+    import asyncio
+    asyncio.run(llm.stream_answer("질문", "문맥", callback))
+
+    assert len(calls) == 2
+    assert tokens == ["answer"]
+
+
+def test_retry_delay_accepts_http_date():
+    request = httpx.Request("POST", "https://example.test")
+    response = httpx.Response(
+        429, request=request, headers={"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"},
+    )
+    error = httpx.HTTPStatusError("limited", request=request, response=response)
+    assert llm.retry_delay(error) == 2.0

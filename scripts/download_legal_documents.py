@@ -5,6 +5,7 @@ import re
 import sys
 from datetime import date
 from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -182,6 +183,37 @@ def download_law(entry: dict, opener) -> list[str]:
     ]
 
 
+class _ParagraphTextParser(HTMLParser):
+    BLOCK_TAGS = {"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs) -> None:
+        if tag == "br":
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag) -> None:
+        if tag in self.BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data) -> None:
+        self.parts.append(data)
+
+
+def html_to_paragraphs(html_text: str) -> str:
+    """Return visible text with one blank line between paragraphs.
+
+    The chunker splits on blank lines, matching the HWPX loader's output.
+    """
+    parser = _ParagraphTextParser()
+    parser.feed(html_text)
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).splitlines())
+    return "\n\n".join(line for line in lines if line) + "\n"
+
+
 def download_administrative_rule(entry: dict, opener) -> list[str]:
     sequence = entry["sequence"]
     character_class = entry["character_class"]
@@ -221,15 +253,7 @@ def download_administrative_rule(entry: dict, opener) -> list[str]:
         body_content, _ = fetch(body_request, opener)
         body_html = body_content.decode("utf-8", errors="replace")
         content = body_html.split('<div id="contentBody">', 1)[-1].split("<script", 1)[0]
-        content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
-        content = re.sub(r"</(?:p|h\d|div|li)>|<br\s*/?>", "\n", content)
-        content = unescape(re.sub(r"<[^>]+>", "", content))
-        lines = []
-        for line in content.splitlines():
-            stripped_line = line.strip()
-            if stripped_line:
-                lines.append(stripped_line)
-        text_content = ("\n".join(lines) + "\n").encode("utf-8")
+        text_content = html_to_paragraphs(content).encode("utf-8")
         path = f"{entry['directory']}/{entry['name']}.txt"
         return [save_content(path, text_content)]
 

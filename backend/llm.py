@@ -137,11 +137,7 @@ async def stream_answer(
         else:
             if LLM_PROVIDER == "vllm" and SLURM_AUTOSTART_VLLM:
                 await ensure_local_vllm(on_status=on_status)
-            base_url = (
-                f"{VLLM_URL.rstrip('/')}/v1"
-                if LLM_PROVIDER == "vllm"
-                else LLM_BASE_URL
-            )
+            base_url = configured_openai_base_url()
             selected_model = GENERATION_MODEL
             selected_api_key = LLM_API_KEY
         if not base_url:
@@ -168,6 +164,7 @@ async def stream_answer(
             request.pop("seed", None)
         if hosted_model == "qwen/qwen3.6-27b":
             request["reasoning_effort"] = "none"
+        stream_failed = False
         try:
             await stream_openai_compatible_payload(
                 request, track_final_text, base_url, headers,
@@ -184,14 +181,10 @@ async def stream_answer(
                 "Hosted model stream failed before returning text; retrying.",
                 exc_info=True,
             )
-            retry_after = (
-                error.response.headers.get("retry-after")
-                if isinstance(error, httpx.HTTPStatusError)
-                else None
-            )
-            await asyncio.sleep(min(float(retry_after or 0), 2.0))
+            stream_failed = True
+            await asyncio.sleep(retry_delay(error))
         if not final_text_seen and (
-            hosted_model or LLM_PROVIDER == "openai_compatible"
+            stream_failed or hosted_model or LLM_PROVIDER == "openai_compatible"
         ):
             logger.warning(
                 "Hosted model emitted no final text; retrying with a larger output budget."
@@ -232,6 +225,24 @@ async def stream_answer(
         raise
 
 
+def configured_openai_base_url() -> str:
+    """Return the OpenAI-compatible base URL for the configured provider."""
+    if LLM_PROVIDER == "vllm":
+        return f"{VLLM_URL.rstrip('/')}/v1"
+    return LLM_BASE_URL
+
+
+def retry_delay(error: httpx.HTTPError) -> float:
+    """Seconds to wait before retrying, capped at two seconds."""
+    if not isinstance(error, httpx.HTTPStatusError):
+        return 0.0
+    try:
+        return min(float(error.response.headers.get("retry-after") or 0), 2.0)
+    except ValueError:
+        # Retry-After may be an HTTP date rather than a number of seconds.
+        return 2.0
+
+
 async def stream_payload(request: dict, callback) -> None:
     await stream_json_tokens(
         f"{OLLAMA_URL}/api/chat",
@@ -260,7 +271,7 @@ async def stream_model_payload(request: dict, callback) -> None:
     hosted_request.pop("think", None)
     hosted_request["max_tokens"] = options.get("num_predict", MAX_OUTPUT_TOKENS)
     hosted_request["temperature"] = options.get("temperature", TEMPERATURE)
-    base_url = VLLM_URL if LLM_PROVIDER == "vllm" else LLM_BASE_URL
+    base_url = configured_openai_base_url()
     if not base_url:
         raise ValueError("LEGALRAG_LLM_BASE_URL is required")
     headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else None
