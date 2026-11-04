@@ -671,7 +671,11 @@ def specific_legal_citation(meta: dict, content: str) -> str | None:
     unit_number = meta.get("legal_unit_number")
     if not article_number:
         return None
-    first_circled = re.search(r"[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]", content[:80])
+    clause_marks = {mark for mark in content if mark in CIRCLED_CLAUSE_MARKS}
+    if len(clause_marks) > 1:
+        # The chunk spans several 항, so only the article is an accurate label.
+        return article_number
+    first_circled = re.search(f"[{CIRCLED_CLAUSE_MARKS}]", content[:80])
     if first_circled:
         clause_number = CIRCLED_CLAUSE_MARKS.index(first_circled.group(0)) + 1
         return f"{article_number}제{clause_number}항"

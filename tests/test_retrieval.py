@@ -66,6 +66,11 @@ class TestSpecificLegalCitation:
         content = "② 정보주체의 권리"
         assert specific_legal_citation(meta, content) == "제15조제2항"
 
+    def test_chunk_spanning_several_clauses_cites_article(self):
+        meta = {"article_number": "제9조", "legal_unit_kind": "clause", "legal_unit_number": "①"}
+        content = "제9조(지체상금) ① 지체상금을 지급하여야 한다. ② 총액은 100분의 8을 초과할 수 없다."
+        assert specific_legal_citation(meta, content) == "제9조"
+
 # ---------------------------------------------------------------------------
 # Fakes for the retrieval pipeline (no live Neo4j or model needed)
 # ---------------------------------------------------------------------------
